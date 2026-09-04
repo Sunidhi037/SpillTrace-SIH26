@@ -1,24 +1,65 @@
-# =========================
-# ML Directory Exclusions
-# =========================
+# Node
+node_modules/
+dist/
 
-# 1. Massive Datasets & Raw Images
+# Environment variables
+.env
+
+# Python virtual environment
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Large SAR datasets
+data/sar/sar_samples/
 ml/oil-spill/
 ml/oil-spill-new/
-ml/masks/
 ml/*.tiff
 ml/*.jpg
-ml/test6.png
+ml/*.png
+
+# Large AIS datasets
+data/ais/ais-2025-01-08.csv.zst
 ml/ais_sample_10000.csv
-# 5. Massive Output (Exceeds GitHub 100MB Limit)
-ml/output_results/test3_pytorch_prob.tif
 
+# Python cache
+__pycache__/
+*.py[cod]
 
-# 2. Intermediate/Heavy Model Weights (Keeping only the final one)
+# Temporary test files
+test_mask.png
+ml/test.py
+ml/test_tiff.py
+ml/day5_tests.py
+ml/structure.txt
+ml/summarize_model.py
+ml/generate_real_eval.py
+ml/project.ipynb
+ml/junk/
+
+# Local/generated AIS ETL artifacts
+data/ais/cleaned/
+data/ais/reports/
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# Generated compatibility validation output
+data/manifests/scenario_compatibility_report.json
+
+# Generated AIS track GeoJSON exports
+data/ais/reports/*.geojson
+
+# ML Model Weights & Generated Artifacts
 ml/*.h5
 ml/*.pt
-ml/unet_binary_spilltrace.keras
+ml/*.keras
+ml/audit_outputs/
+ml/day3_outputs/
+ml/day4_outputs/
+ml/day5_outputs/
+ml/output_results/
 
-# 3. System Files
-ml/__pycache__/
-ml/structure.txt
+logs/
+*.jsonl

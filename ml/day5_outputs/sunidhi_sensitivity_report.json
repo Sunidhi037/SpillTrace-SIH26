@@ -9,7 +9,7 @@
             "random_seed": 42
         },
         "metrics": {
-            "execution_time_seconds": 0.7586,
+            "execution_time_seconds": 0.4947,
             "predicted_origin_lat": 19.495748,
             "predicted_origin_lon": 70.709029,
             "final_uncertainty_radius_m": 1191.87
@@ -25,7 +25,7 @@
             "random_seed": 42
         },
         "metrics": {
-            "execution_time_seconds": 0.7626,
+            "execution_time_seconds": 0.5179,
             "predicted_origin_lat": 19.495748,
             "predicted_origin_lon": 70.709029,
             "final_uncertainty_radius_m": 1191.87
@@ -41,7 +41,7 @@
             "random_seed": 42
         },
         "metrics": {
-            "execution_time_seconds": 0.7901,
+            "execution_time_seconds": 0.5043,
             "predicted_origin_lat": 19.495745,
             "predicted_origin_lon": 70.689975,
             "final_uncertainty_radius_m": 1191.87
@@ -57,7 +57,7 @@
             "random_seed": 42
         },
         "metrics": {
-            "execution_time_seconds": 0.734,
+            "execution_time_seconds": 0.4965,
             "predicted_origin_lat": 19.495739,
             "predicted_origin_lon": 70.658223,
             "final_uncertainty_radius_m": 1191.88
@@ -73,7 +73,7 @@
             "random_seed": 99
         },
         "metrics": {
-            "execution_time_seconds": 0.7759,
+            "execution_time_seconds": 0.4669,
             "predicted_origin_lat": 19.496178,
             "predicted_origin_lon": 70.709362,
             "final_uncertainty_radius_m": 1149.12
