@@ -1,0 +1,6 @@
+test_scenario,wind_speed_mps,wind_direction_from_deg,current_speed_mps,current_direction_from_deg,seed,execution_time_seconds,predicted_origin_lat,predicted_origin_lon,uncertainty_radius_m
+Baseline Run,,,,,,0.5507,19.495748,70.709029,
+Reproducibility Check (Same Seed),,,,,,0.4938,19.495748,70.709029,
+Sensitivity: High Wind (+20%),,,,,,0.5166,19.495745,70.689975,
+Sensitivity: High Current (+20%),,,,,,0.4868,19.495739,70.658223,
+Seed Variance (Seed 99),,,,,,0.4774,19.496178,70.709362,
