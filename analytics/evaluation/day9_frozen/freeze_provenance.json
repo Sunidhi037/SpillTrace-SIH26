@@ -1,0 +1,45 @@
+{
+  "freeze_day": 9,
+  "golden_scenario": "SPILL_TEST3_001",
+  "manifest_version": "1.0",
+  "scoring_version": null,
+  "source_files": {
+    "scenario_manifest": "data\\manifests\\scenario_manifest.json",
+    "drift_metadata": "ml\\day5_outputs\\drift_metadata.json",
+    "sensitivity_report": "ml\\day5_outputs\\sensitivity_report.json",
+    "ais_sample": "data\\ais\\ais_sample_10000.csv"
+  },
+  "frozen_assets": [
+    {
+      "path": "analytics\\evaluation\\day9_frozen\\golden_scenario_quality_summary.json",
+      "sha256": "233af92202154a423c7f564ae1eb399cfacd5c487c6753537b89b2120741eca4",
+      "size_bytes": 1124
+    },
+    {
+      "path": "analytics\\evaluation\\day9_frozen\\tables\\golden_scenario_quality_summary.csv",
+      "sha256": "a9bbd94e2161a1d309ae6cd26a48cfec3e7a2f3cdbdf01f0236354e2b49f0845",
+      "size_bytes": 477
+    },
+    {
+      "path": "analytics\\evaluation\\day9_frozen\\tables\\golden_scenario_sensitivity.csv",
+      "sha256": "d1fba12174db47f0264a4460046f7aa2152985bcd2b4cc7c0bea14c433f56e93",
+      "size_bytes": 494
+    },
+    {
+      "path": "analytics\\evaluation\\day9_frozen\\tables\\repeatability_check.csv",
+      "sha256": "21ad1cad48dd9a3220baf96a257086045cc1b9a23d258995e8770adf6ad94006",
+      "size_bytes": 209
+    },
+    {
+      "path": "analytics\\evaluation\\day9_frozen\\tables\\unsupported_metrics_status.csv",
+      "sha256": "ebfb71d19af51e299ed07dcda12040f8cbd48ea6ebd1963a7400a3f3972de862",
+      "size_bytes": 102
+    }
+  ],
+  "unsupported_metrics": {
+    "Recall@1": "NOT COMPUTED",
+    "Recall@3": "NOT COMPUTED",
+    "ground_truth_verified_attribution": false
+  },
+  "generated_from_project_outputs": true
+}

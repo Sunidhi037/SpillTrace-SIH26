@@ -1,0 +1,58 @@
+{
+  "spill_id": "SPILL_TEST3_001",
+  "source_csv": "analytics\\evaluation\\day9_frozen\\tables\\golden_scenario_quality_summary.csv",
+  "quality_summary": [
+    {
+      "Scenario": "SPILL_TEST3_001"
+    },
+    {
+      "Detector": "UNAVAILABLE — detector status is not recorded in the current scenario manifest."
+    },
+    {
+      "Geometry": "UNAVAILABLE"
+    },
+    {
+      "Geometry Valid": null
+    },
+    {
+      "Area (km²)": null
+    },
+    {
+      "Perimeter (m)": null
+    },
+    {
+      "Drift Mode": null
+    },
+    {
+      "Drift Uncertainty (m)": null
+    },
+    {
+      "AIS Rows": "10000"
+    },
+    {
+      "AIS Unique MMSI": "6890"
+    },
+    {
+      "AIS Missing Values": "22555"
+    },
+    {
+      "Compatibility": "UNAVAILABLE"
+    },
+    {
+      "Candidate Ranking": "BLOCKED_OR_UNAVAILABLE"
+    },
+    {
+      "Repeatability": "PASS"
+    },
+    {
+      "Recall@1": "NOT COMPUTED"
+    },
+    {
+      "Recall@3": "NOT COMPUTED"
+    },
+    {
+      "Freeze Status": "READY FOR EVALUATION/PPT"
+    }
+  ],
+  "generated_from_project_outputs": true
+}

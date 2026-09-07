@@ -1,0 +1,18 @@
+Metric,Value
+Scenario,SPILL_TEST3_001
+Detector,UNAVAILABLE — detector status is not recorded in the current scenario manifest.
+Geometry,UNAVAILABLE
+Geometry Valid,
+Area (km²),
+Perimeter (m),
+Drift Mode,
+Drift Uncertainty (m),
+AIS Rows,10000
+AIS Unique MMSI,6890
+AIS Missing Values,22555
+Compatibility,UNAVAILABLE
+Candidate Ranking,BLOCKED_OR_UNAVAILABLE
+Repeatability,PASS
+Recall@1,NOT COMPUTED
+Recall@3,NOT COMPUTED
+Freeze Status,READY FOR EVALUATION/PPT
