@@ -1,3 +1,5 @@
+import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -6,6 +8,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from app.schemas import SpillGeometry, SpillMetadataResponse, SpillResponse, SpillUploadResponse
 from app.api.routes.store import SPILL_STORE
+from app.services.detector_service import detector_service
 
 router = APIRouter(prefix="/spills", tags=["spills"])
 
@@ -13,7 +16,66 @@ BASE_DIR = Path(__file__).resolve().parents[3]
 DATA_DIR = BASE_DIR / "data" / "sar"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-from app.services.detector_service import detector_service
+# 1 degree of latitude is ~111.32 km everywhere; 1 degree of longitude
+# shrinks with latitude by a factor of cos(latitude). The detector's
+# GeoJSON is in EPSG:4326 (plain lat/lon degrees), so this gives a
+# reasonable area estimate without pulling in a full projection library
+# just for this one demo-endpoint calculation.
+_KM_PER_DEGREE_LAT = 111.32
+
+
+def _read_geojson(path: str | None) -> dict | None:
+    if not path:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _shoelace_area_deg2(coordinates: list) -> float:
+    """Unsigned polygon area in square degrees (shoelace formula, outer ring only)."""
+    ring = coordinates[0] if coordinates else []
+    if len(ring) < 3:
+        return 0.0
+    area = 0.0
+    for i in range(len(ring) - 1):
+        x1, y1 = ring[i][0], ring[i][1]
+        x2, y2 = ring[i + 1][0], ring[i + 1][1]
+        area += x1 * y2 - x2 * y1
+    return abs(area) / 2.0
+
+
+def _estimate_area_sq_km(geojson: dict | None) -> float:
+    if not geojson:
+        return 0.0
+
+    features = geojson.get("features", [])
+    total_deg2 = 0.0
+    lat_sum, lat_count = 0.0, 0
+
+    for feature in features:
+        geom = feature.get("geometry") or {}
+        coords = geom.get("coordinates")
+        if geom.get("type") == "Polygon" and coords:
+            total_deg2 += _shoelace_area_deg2(coords)
+            for lon, lat in coords[0]:
+                lat_sum += lat
+                lat_count += 1
+        elif geom.get("type") == "MultiPolygon" and coords:
+            for polygon in coords:
+                total_deg2 += _shoelace_area_deg2(polygon)
+                for lon, lat in polygon[0]:
+                    lat_sum += lat
+                    lat_count += 1
+
+    if total_deg2 == 0.0 or lat_count == 0:
+        return 0.0
+
+    avg_lat_rad = math.radians(lat_sum / lat_count)
+    km_per_degree_lon = _KM_PER_DEGREE_LAT * math.cos(avg_lat_rad)
+    return round(total_deg2 * _KM_PER_DEGREE_LAT * km_per_degree_lon, 4)
 
 
 def run_detector(saved_path: str, spill_id: str) -> dict:
@@ -27,21 +89,35 @@ def run_detector(saved_path: str, spill_id: str) -> dict:
     )
     normalized = detector_service.normalize(raw)
 
-    geometry_data = (
-        normalized.get("metadata", {}).get("geometry")
-        or normalized.get("geometry")
-    )
-    if not geometry_data:
-        raise RuntimeError("Detector returned no geometry.")
+    if normalized["status"] == "FAILED":
+        error = normalized.get("error") or {}
+        raise RuntimeError(error.get("message", "Detection failed."))
 
-    geometry = SpillGeometry(**geometry_data)
+    # detector_service.normalize() keeps the real on-disk geojson path
+    # under "_artifact_paths" (separate from the web-facing "/artifacts/..."
+    # URL in "artifacts") specifically so this route can read it directly.
+    geojson_path = normalized.get("_artifact_paths", {}).get("geojson")
+    geojson_data = _read_geojson(geojson_path)
+
+    if geojson_data:
+        geometry = SpillGeometry(geojson=geojson_data)
+        area_sq_km = _estimate_area_sq_km(geojson_data)
+        message = normalized["message"]
+    else:
+        # A COMPLETED status with no geojson file means the detector ran
+        # fine but found no oil-class pixels above threshold -- that is a
+        # valid, non-error outcome, not something to fail the request over.
+        geometry = SpillGeometry(geojson={"type": "FeatureCollection", "features": []})
+        area_sq_km = 0.0
+        message = "Detection completed: no oil slick above threshold was found."
 
     return {
-        "message": normalized["message"],
+        "message": message,
         "geometry": geometry,
-        "area_sq_km": normalized.get("metadata", {}).get("area_sq_km", 0.0),
+        "area_sq_km": area_sq_km,
         "detector_name": normalized.get("metadata", {}).get("detector_name", "detector-service"),
     }
+
 
 @router.post("/upload", response_model=SpillUploadResponse)
 async def upload_spill(file: UploadFile = File(...)):

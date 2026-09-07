@@ -55,6 +55,15 @@ class AISTrackFeatureCollection(BaseModel):
     type: Literal["FeatureCollection"] = "FeatureCollection"
     features: list[AISTrackFeature]
     filters: dict[str, Any] = Field(default_factory=dict)
+    # --- Added when wiring the real-parquet AIS adapter -------------------
+    # These three fields let a caller (or a human reading a raw response)
+    # tell real AIS data apart from an unavailable state WITHOUT having to
+    # infer it from an empty features list (which is also a valid outcome
+    # for a real query that legitimately matched nothing). They are
+    # additive: existing code that only reads `.features` is unaffected.
+    available: bool = True
+    source: Literal["real", "unavailable"] = "real"
+    provenance: str | None = None
 
 
 def get_ais_service():
@@ -137,4 +146,7 @@ def get_ais_tracks(
             "mmsi": mmsi,
             "limit": limit,
         },
+        available=result.get("available", True),
+        source=result.get("source", "real"),
+        provenance=result.get("provenance"),
     )
