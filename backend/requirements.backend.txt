@@ -8,3 +8,8 @@ python-multipart
 numpy
 pyproj
 shapely
+# Added for app/services/ais_service.py: reads Pratyush's real, already-
+# cleaned AIS parquet files (data/ais/cleaned/*.parquet) directly. No other
+# module in this backend currently needs these.
+pandas
+pyarrow
