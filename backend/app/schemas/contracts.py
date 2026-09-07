@@ -40,6 +40,14 @@ class SpillMetadataResponse(BaseModel):
     status: str
     uploaded_at: datetime
     source: Optional[str] = None
+    # Populated once POST /spills/{spill_id}/detect (app/api/routes/spills.py)
+    # has run against this spill -- it already writes all four of these onto
+    # SPILL_STORE, but this schema wasn't exposing them, so a fresh page
+    # load (no sessionStorage) couldn't recover a previous detection result.
+    detected_at: Optional[datetime] = None
+    geometry: Optional[SpillGeometry] = None
+    area_sq_km: Optional[float] = None
+    detector_name: Optional[str] = None
 
 
 class SARSceneMetadata(BaseModel):

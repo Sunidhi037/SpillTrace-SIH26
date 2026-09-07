@@ -1,10 +1,13 @@
 /**
  * AISTrackInfo
  *
- * Shown when an AIS track is selected on the map. There is currently
- * no backend AIS source, so this component always renders the
- * "unavailable" state — it exists so the integration point is ready
- * the day GET /api/v1/ais/tracks (or equivalent) is implemented.
+ * Shown when an AIS track is selected on the map. GET /api/v1/ais/tracks
+ * (app/services/ais_service.py) now returns real feature data -- either
+ * from data/ais/*.json if present, or a clearly-labeled synthetic demo
+ * dataset otherwise (properties.quality.source_file_provenance says which).
+ * This still renders the "no track selected" state gracefully if the
+ * caller passes no track (e.g. before "Load AIS Tracks" has been run, or
+ * if the query returned zero features).
  */
 
 function AISTrackInfo({ track, compatibilityBlocked, blockedReason }) {
@@ -22,8 +25,10 @@ function AISTrackInfo({ track, compatibilityBlocked, blockedReason }) {
       <div className="ais-track-info ais-empty">
         <strong>AIS tracks not available</strong>
         <p>
-          This backend does not currently expose an AIS tracks endpoint. No vessel positions, MMSIs, or timestamps
-          are fabricated here — this panel will populate once a real AIS data source is wired up.
+          No AIS track is selected yet. Click "Load AIS Tracks" and pick a
+          track on the map — no vessel positions, MMSIs, or timestamps are
+          fabricated in this panel beyond whatever the backend actually
+          returned.
         </p>
       </div>
     );
@@ -31,9 +36,32 @@ function AISTrackInfo({ track, compatibilityBlocked, blockedReason }) {
 
   const p = track.properties || {};
 
+  // properties.quality.source_file_provenance is set by the backend
+  // (app/services/ais_service.py) on every feature it returns. It always
+  // starts with "real (Pratyush AIS ETL, cleaned parquet): <path>" for
+  // genuine data. There is currently no synthetic path left in the
+  // backend service at all -- but this check is kept defensive (rather
+  // than just trusting a "real" label) so that if a future data source is
+  // ever added upstream without updating this string, an unrecognized
+  // provenance value still renders as a visible warning instead of
+  // silently looking identical to verified real data.
+  const provenance = p.quality?.source_file_provenance || null;
+  const isVerifiedReal = provenance != null && provenance.startsWith("real ");
+
   return (
     <div className="ais-track-info">
       <strong>{p.vessel_name || "Unknown vessel"}</strong>
+
+      <div
+        className={`ais-provenance-badge ${
+          isVerifiedReal ? "ais-provenance-real" : "ais-provenance-unverified"
+        }`}
+      >
+        {provenance
+          ? provenance
+          : "Data source not labeled by backend — treat as unverified."}
+      </div>
+
       <div className="quality-row">
         <span>MMSI</span>
         <span>{p.mmsi || "Not provided by backend"}</span>

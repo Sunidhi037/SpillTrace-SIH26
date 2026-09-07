@@ -47,9 +47,24 @@ export function normalizeGeoJSON(value) {
     return null;
   }
 
+  // IMPORTANT: check for actual content, not just the `type` string.
+  // app/schemas/contracts.py's SpillGeometry ALWAYS sets
+  // type: "FeatureCollection" on its outer wrapper even when the real
+  // GeoJSON lives nested one level deeper under `.geojson` (coordinates
+  // stays null on the wrapper in that case). Matching on `type` alone
+  // would return that empty wrapper here and silently drop the real
+  // slick polygon instead of falling through to the `.geojson` check
+  // below.
   if (
-    value.type === "FeatureCollection" ||
-    value.type === "Feature"
+    value.type === "FeatureCollection" &&
+    Array.isArray(value.features)
+  ) {
+    return value;
+  }
+
+  if (
+    value.type === "Feature" &&
+    value.geometry
   ) {
     return value;
   }

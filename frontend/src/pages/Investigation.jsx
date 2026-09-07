@@ -2,10 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import {
-  createDetection,
   createInvestigationReport,
   createInvestigationReportHtml,
-  detectSpillMock,
+  detectSpill,
   getAisTracks,
   getApiError,
   getCandidateDetail,
@@ -14,7 +13,6 @@ import {
   getSceneCompatibility,
   getSceneManifest,
   getSpill,
-  pollDetection,
   rankCandidates,
   resolveApiUrl,
   runForecast,
@@ -49,6 +47,7 @@ import {
   normalizeCandidateResponse,
   normalizeDetectionGeometry,
   normalizeGeoJSON,
+  getGeoJSONCentroid,
   saveInvestigationData,
 } from "../utils/investigation";
 
@@ -71,13 +70,44 @@ function normalizeCompatibility(value) {
   };
 }
 
+// Backend has two different-shaped detect responses (see detectSpill()'s
+// doc comment in services/api.js). This UI is written against the
+// DetectionResponse job shape (uppercase status, .metadata with
+// centroid/area_sq_km/etc) -- this adapter normalizes the ACTUAL live
+// response (SpillResponse: lowercase custom status, area_sq_km/detected_at
+// at the top level, no .metadata at all) into that same shape, so
+// everything else in this file (SlickMetrics, DetectionStatus, report
+// export, drift centroid lookup, ...) keeps working unchanged regardless
+// of which one came back.
+const DETECTION_STATUS_MAP = {
+  DETECTED: "COMPLETED",
+  DETECTION_FAILED: "FAILED",
+  UPLOADED: "QUEUED",
+};
+
 function normalizeDetectionJob(job) {
   if (!job) return null;
 
   const geo = normalizeDetectionGeometry(job);
 
+  const rawStatus = String(job.status || "").toUpperCase();
+  const status = DETECTION_STATUS_MAP[rawStatus] || rawStatus || "UNKNOWN";
+
+  const centroid =
+    job.metadata?.centroid ||
+    (geo ? getGeoJSONCentroid(geo) : null);
+
+  const metadata = job.metadata || {
+    detector_name: job.detector_name || "SpillTrace Detector",
+    area_sq_km: job.area_sq_km ?? null,
+    centroid,
+    extra: { area_sq_km: job.area_sq_km ?? null },
+  };
+
   return {
     ...job,
+    status,
+    metadata,
     geojson: geo,
     isMock: job.isMock === true,
   };
@@ -197,7 +227,12 @@ export default function Investigation() {
   const [slickGeojson, setSlickGeojson] = useState(null);
 
   const [slickIsMock, setSlickIsMock] = useState(false);
-  const [mockArea, setMockArea] = useState(null);
+  // No code path sets this to non-null anymore -- the old "demo detection"
+  // endpoint concept is gone now that /api/spills/{id}/detect returns real
+  // area_sq_km directly (see normalizeDetectionJob's metadata shim above
+  // and SlickMetrics.jsx, which reads metadata.extra.area_sq_km first).
+  // Kept only so SlickMetrics' prop signature doesn't need to change.
+  const mockArea = null;
 
   /* ------------------------------------------------------------------------ */
   /* Drift                                                                    */
@@ -367,6 +402,32 @@ export default function Investigation() {
 
         setSpill(spillResponse);
 
+        /* If nothing was cached in this browser session but the backend
+           already has a detection result for this spill_id (survives a
+           hard reload / different tab -- see SpillMetadataResponse's
+           optional geometry/area_sq_km/detected_at fields), hydrate the
+           detection panel from that instead of leaving it empty. */
+
+        if (!saved?.detection && spillResponse?.geometry) {
+          const hydrated = normalizeDetectionJob({
+            spill_id: spillResponse.spill_id,
+            status: spillResponse.status,
+            message:
+              spillResponse.message ||
+              "Detection completed.",
+            geometry: spillResponse.geometry,
+            area_sq_km: spillResponse.area_sq_km,
+            detected_at: spillResponse.detected_at,
+            detector_name: spillResponse.detector_name,
+          });
+
+          setDetection(hydrated);
+
+          if (hydrated.geojson) {
+            setSlickGeojson(hydrated.geojson);
+          }
+        }
+
         /* Load scene list */
 
         const sceneListResponse = await getScenes();
@@ -405,67 +466,6 @@ export default function Investigation() {
           setSceneError(
             "No SAR scene metadata is available for this investigation."
           );
-        }
-
-        /* Resume running detection */
-
-        if (
-          saved?.detection?.job_id &&
-          ["QUEUED", "PROCESSING"].includes(
-            saved.detection.status
-          )
-        ) {
-          setDetectionLoading(true);
-
-          try {
-            const finalJob = await pollDetection(
-              saved.detection.job_id,
-              {
-                onUpdate: (job) => {
-                  if (!active) return;
-
-                  const normalized =
-                    normalizeDetectionJob(job);
-
-                  setDetection(normalized);
-
-                  if (normalized.geojson) {
-                    setSlickGeojson(
-                      normalized.geojson
-                    );
-                  }
-
-                  saveInvestigationData(id, {
-                    ...saved,
-                    detection: job,
-                  });
-                },
-              }
-            );
-
-            if (active) {
-              const normalized =
-                normalizeDetectionJob(finalJob);
-
-              setDetection(normalized);
-
-              if (normalized.geojson) {
-                setSlickGeojson(
-                  normalized.geojson
-                );
-              }
-            }
-          } catch (err) {
-            if (active) {
-              setDetectionError(
-                getApiError(err).message
-              );
-            }
-          } finally {
-            if (active) {
-              setDetectionLoading(false);
-            }
-          }
         }
       } catch (err) {
         if (!active) return;
@@ -558,22 +558,20 @@ export default function Investigation() {
   }, [detection?.artifacts?.geojson, slickGeojson]);
 
   /* ------------------------------------------------------------------------ */
-  /* Real detection                                                           */
+  /* Detection                                                                */
   /* ------------------------------------------------------------------------ */
 
+  /**
+   * POST /api/spills/{spill_id}/detect -- no body, no file re-upload, no
+   * scene_id/file_path needed. The backend runs synchronously against the
+   * file it already saved during upload, so this call's response is
+   * already the final result. See detectSpill()'s doc comment in
+   * services/api.js for the exact response shape.
+   */
   const runDetection = async () => {
-    const saved = loadInvestigationData(id);
-
-    const filePath =
-      saved?.upload?.saved_path;
-
-    const sceneId =
-      scene?.scene_id ||
-      saved?.sceneId;
-
-    if (!filePath || !sceneId) {
+    if (!spillId) {
       setDetectionError(
-        "No server-side uploaded file path is available. Start from Upload & Run Detection."
+        "No spill_id is available for this investigation yet."
       );
 
       return;
@@ -582,132 +580,39 @@ export default function Investigation() {
     setDetectionLoading(true);
     setDetectionError(null);
 
-    try {
-      const job = await createDetection({
-        sceneId,
-        filePath,
-      });
+    const saved = loadInvestigationData(id) || {};
 
-      const normalizedJob =
-        normalizeDetectionJob(job);
+    try {
+      const job = await detectSpill(spillId);
+
+      const normalizedJob = normalizeDetectionJob(job);
 
       setDetection(normalizedJob);
 
-      saveInvestigationData(id, {
-        ...saved,
-        sceneId,
-        detection: job,
-      });
-
-      const finalJob = await pollDetection(
-        job.job_id,
-        {
-          onUpdate: (next) => {
-            const normalized =
-              normalizeDetectionJob(next);
-
-            setDetection(normalized);
-
-            if (normalized.geojson) {
-              setSlickGeojson(
-                normalized.geojson
-              );
-            }
-
-            saveInvestigationData(id, {
-              ...saved,
-              sceneId,
-              detection: next,
-            });
-          },
-        }
-      );
-
-      const normalizedFinal =
-        normalizeDetectionJob(finalJob);
-
-      setDetection(normalizedFinal);
-
-      if (normalizedFinal.geojson) {
-        setSlickGeojson(
-          normalizedFinal.geojson
-        );
+      if (normalizedJob.geojson) {
+        setSlickGeojson(normalizedJob.geojson);
       }
 
       setSlickIsMock(false);
 
       saveInvestigationData(id, {
         ...saved,
-        sceneId,
-        detection: finalJob,
+        detection: job,
       });
     } catch (err) {
-      setDetectionError(
-        getApiError(err).message
-      );
-    } finally {
-      setDetectionLoading(false);
-    }
-  };
+      const apiErr = getApiError(err);
 
-  /* ------------------------------------------------------------------------ */
-  /* Demo detection                                                           */
-  /* ------------------------------------------------------------------------ */
+      setDetectionError(apiErr.message);
 
-  const runDemoDetection = async () => {
-    if (!spillId) return;
-
-    setDetectionLoading(true);
-    setDetectionError(null);
-
-    try {
-      const result =
-        await detectSpillMock(spillId);
-
-      const geometry =
-        normalizeGeoJSON(result?.geometry);
-
-      setSlickGeojson(geometry);
-
-      setSlickIsMock(true);
-
-      setMockArea(
-        result?.area_sq_km ?? null
-      );
-
-      setDetection({
-        status: "COMPLETED",
-
-        message:
-          result?.message ||
-          "Demo detection completed.",
-
-        metadata: {
-          detector_name:
-            "Backend demonstration endpoint",
-
-          model_name:
-            "Mock segmentation",
-
-          total_slicks_detected: 1,
-
-          probability_threshold: null,
-
-          centroid: null,
-
-          extra: {
-            area_sq_km:
-              result?.area_sq_km ?? null,
-          },
-        },
-
-        geojson: geometry,
-
-        isMock: true,
-      });
-    } catch (err) {
-      setDetectionError(
-        getApiError(err).message
+      setDetection(
+        normalizeDetectionJob({
+          spill_id: spillId,
+          status: "detection_failed",
+          message: apiErr.message,
+          error: apiErr.code
+            ? { code: apiErr.code, message: apiErr.message }
+            : null,
+        })
       );
     } finally {
       setDetectionLoading(false);
@@ -782,8 +687,17 @@ export default function Investigation() {
     setAisError(null);
 
     try {
-      const response =
-        await getAisTracks(spillId);
+      // GET /api/v1/ais/tracks requires start_time/end_time -- centre the
+      // query on this spill's detection time and centroid when available
+      // (getAisTracks() itself defaults to "now, last 7 days" if not).
+      const centroid = detection?.metadata?.centroid;
+
+      const response = await getAisTracks(spillId, {
+        endTime: detection?.detected_at || undefined,
+        lat: Array.isArray(centroid) ? centroid[1] : undefined,
+        lon: Array.isArray(centroid) ? centroid[0] : undefined,
+        radiusKm: Array.isArray(centroid) ? 50 : undefined,
+      });
 
       const geo =
         normalizeAisResponse(response);
@@ -813,18 +727,9 @@ export default function Investigation() {
       const apiError =
         getApiError(err);
 
-      if (
-        apiError.code ===
-        "AIS_NOT_CONFIGURED"
-      ) {
-        setAisError(
-          "AIS endpoint is not configured yet."
-        );
-      } else {
-        setAisError(
-          apiError.message
-        );
-      }
+      setAisError(
+        apiError.message
+      );
 
       setAisTracksGeojson(null);
     } finally {
@@ -1802,39 +1707,21 @@ export default function Investigation() {
               </div>
             )}
 
-            {!detection?.isMock &&
-              !slickGeojson && (
-                <button
-                  className="secondary-button"
-                  onClick={
-                    runDetection
-                  }
-                  disabled={
-                    detectionLoading
-                  }
-                >
-                  {detectionLoading
-                    ? "Running detector…"
-                    : "Run Real Detection"}
-                </button>
-              )}
-
-            {spill && (
+            {spillId && (
               <button
                 className="secondary-button"
                 onClick={
-                  runDemoDetection
+                  runDetection
                 }
                 disabled={
                   detectionLoading
                 }
-                style={{
-                  marginTop: 8,
-                }}
               >
                 {detectionLoading
-                  ? "Working…"
-                  : "Run Demo Detection"}
+                  ? "Running detector…"
+                  : detection
+                    ? "Re-run Detection"
+                    : "Run Detection"}
               </button>
             )}
 

@@ -2359,6 +2359,26 @@ input:focus-visible {
   margin: 0;
 }
 
+.ais-provenance-badge {
+  font-size: 0.72rem;
+  padding: 4px 8px;
+  border-radius: 6px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.ais-provenance-real {
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  background: rgba(34, 197, 94, 0.08);
+  color: #4ade80;
+}
+
+.ais-provenance-unverified {
+  border: 1px solid rgba(230, 83, 60, 0.35);
+  background: rgba(230, 83, 60, 0.06);
+  color: #e6533c;
+}
+
 /* ---------- Candidate Blocked ---------- */
 
 .candidate-blocked {
