@@ -1,507 +1,328 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import {
-  createDetection,
+  detectSpill,
   getApiError,
-  getScenes,
-  pollDetection,
   uploadSpill,
 } from "../services/api";
 
 import {
+  normalizeDetectionGeometry,
   saveInvestigationData,
 } from "../utils/investigation";
 
 const MAX_MB = 250;
 
+/*
+ * Upload flow (matches app/api/routes/spills.py exactly):
+ *
+ *   1. POST /api/spills/upload      (multipart/form-data, field name "file")
+ *        -> { spill_id, filename, content_type, saved_path, uploaded_at, status }
+ *
+ *   2. POST /api/spills/{spill_id}/detect   (no body -- file is not re-sent)
+ *        -> { spill_id, status, message, geometry, area_sq_km, detected_at }
+ *      geometry is double-wrapped: the real GeoJSON FeatureCollection is at
+ *      geometry.geojson, not geometry directly (see detectSpill()'s doc
+ *      comment in services/api.js) -- normalizeDetectionGeometry() below
+ *      already knows to unwrap this.
+ *
+ *   3. navigate(`/investigation/${spill_id}`)   -- spill_id from step 1's
+ *      response, never a scene_id, never the local file name.
+ *
+ * "Run Detection" is disabled until step 1 has produced a real spill_id.
+ */
+
 function Upload() {
   const navigate = useNavigate();
 
-  const [scenes, setScenes] =
-    useState([]);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [fileError, setFileError] = useState("");
 
-  const [sceneId, setSceneId] =
-    useState("");
+  const [uploading, setUploading] = useState(false);
+  const [uploadResult, setUploadResult] = useState(null);
+  const [uploadError, setUploadError] = useState("");
 
-  const [selectedFile, setSelectedFile] =
-    useState(null);
+  const [detecting, setDetecting] = useState(false);
+  const [detectionResult, setDetectionResult] = useState(null);
+  const [detectionError, setDetectionError] = useState("");
 
-  const [loading, setLoading] =
-    useState(false);
+  const spillId = uploadResult?.spill_id || null;
+  const detectionGeojson = detectionResult
+    ? normalizeDetectionGeometry(detectionResult)
+    : null;
 
-  const [stage, setStage] =
-    useState("");
+  const handleFileChange = (event) => {
+    const file = event.target.files?.[0];
 
-  const [error, setError] =
-    useState("");
+    if (!file) return;
 
+    const extension = file.name.toLowerCase().split(".").pop();
 
-  useEffect(() => {
-    let active = true;
-
-    getScenes()
-      .then((data) => {
-        if (!active) return;
-
-        const list =
-          data?.scenes || [];
-
-        setScenes(list);
-
-        if (
-          list[0]?.scene_id
-        ) {
-          setSceneId(
-            list[0].scene_id
-          );
-        }
-      })
-      .catch(() => {
-        if (active) {
-          setScenes([]);
-        }
-      });
-
-    return () => {
-      active = false;
-    };
-  }, []);
-
-
-  const handleFileChange =
-    (event) => {
-      const file =
-        event.target.files?.[0];
-
-      if (!file) return;
-
-      const extension =
-        file.name
-          .toLowerCase()
-          .split(".")
-          .pop();
-
-      if (
-        !["tif", "tiff"].includes(
-          extension
-        )
-      ) {
-        setSelectedFile(null);
-
-        setError(
-          "Please select a GeoTIFF file (.tif or .tiff)."
-        );
-
-        return;
-      }
-
-      if (
-        file.size >
-        MAX_MB * 1024 * 1024
-      ) {
-        setSelectedFile(null);
-
-        setError(
-          `File is larger than ${MAX_MB} MB.`
-        );
-
-        return;
-      }
-
-      setSelectedFile(file);
-      setError("");
-    };
-
-
-  const handleStart = async () => {
-    if (
-      !selectedFile ||
-      loading
-    ) {
+    if (!["tif", "tiff"].includes(extension)) {
+      setSelectedFile(null);
+      setFileError("Please select a GeoTIFF file (.tif or .tiff).");
       return;
     }
 
-    if (!sceneId) {
-      setError(
-        "Select a SAR scene before starting detection."
-      );
-
+    if (file.size > MAX_MB * 1024 * 1024) {
+      setSelectedFile(null);
+      setFileError(`File is larger than ${MAX_MB} MB.`);
       return;
     }
+
+    setSelectedFile(file);
+    setFileError("");
+
+    // Picking a new file invalidates any previous upload/detection state.
+    setUploadResult(null);
+    setUploadError("");
+    setDetectionResult(null);
+    setDetectionError("");
+  };
+
+  /* -------------------------------------------------------------- */
+  /* STEP 1 — upload                                                 */
+  /* -------------------------------------------------------------- */
+
+  const handleUpload = async () => {
+    if (!selectedFile || uploading) return;
+
+    setUploading(true);
+    setUploadError("");
+    setDetectionResult(null);
+    setDetectionError("");
 
     try {
-      setLoading(true);
-      setError("");
+      const result = await uploadSpill(selectedFile);
 
-      /*
-       * STEP 1
-       */
-      setStage(
-        "Uploading SAR file…"
-      );
-
-      const uploadResult =
-        await uploadSpill(
-          selectedFile
-        );
-
-      if (!uploadResult?.spill_id) {
-        throw new Error(
-          "Backend upload succeeded but did not return a spill_id."
-        );
+      if (!result?.spill_id) {
+        throw new Error("Backend did not return a spill_id.");
       }
 
+      setUploadResult(result);
 
-      /*
-       * IMPORTANT:
-       *
-       * Everything after this point
-       * is stored under REAL spill_id.
-       */
-      saveInvestigationData(
-        uploadResult.spill_id,
-        {
-          upload:
-            uploadResult,
-
-          sceneId,
-
-          fileName:
-            selectedFile.name,
-        }
-      );
-
-
-      /*
-       * STEP 2
-       */
-      setStage(
-        "Starting real detector…"
-      );
-
-      const job =
-        await createDetection({
-          sceneId,
-
-          filePath:
-            uploadResult.saved_path,
-        });
-
-
-      saveInvestigationData(
-        uploadResult.spill_id,
-        {
-          upload:
-            uploadResult,
-
-          sceneId,
-
-          fileName:
-            selectedFile.name,
-
-          detection:
-            job,
-        }
-      );
-
-
-      /*
-       * STEP 3
-       */
-      setStage(
-        "Waiting for detector…"
-      );
-
-      const finalJob =
-        await pollDetection(
-          job.job_id,
-          {
-            onUpdate: (
-              next
-            ) => {
-              saveInvestigationData(
-                uploadResult.spill_id,
-                {
-                  upload:
-                    uploadResult,
-
-                  sceneId,
-
-                  fileName:
-                    selectedFile.name,
-
-                  detection:
-                    next,
-                }
-              );
-
-              setStage(
-                next.status ===
-                  "PROCESSING"
-                  ? "Detector is processing…"
-                  : next.message ||
-                    next.status
-              );
-            },
-          }
-        );
-
-
-      saveInvestigationData(
-        uploadResult.spill_id,
-        {
-          upload:
-            uploadResult,
-
-          sceneId,
-
-          fileName:
-            selectedFile.name,
-
-          detection:
-            finalJob,
-        }
-      );
-
-
-      /*
-       * IMPORTANT:
-       *
-       * Route uses spill_id,
-       * NOT scene_id.
-       */
-      navigate(
-        `/investigation/${encodeURIComponent(
-          uploadResult.spill_id
-        )}`
-      );
+      saveInvestigationData(result.spill_id, {
+        upload: result,
+        fileName: selectedFile.name,
+      });
     } catch (err) {
-      const apiErr =
-        getApiError(err);
-
-      setError(
-        apiErr.message
-      );
-
-      setStage("");
+      setUploadResult(null);
+      setUploadError(getApiError(err).message);
     } finally {
-      setLoading(false);
+      setUploading(false);
     }
   };
 
+  /* -------------------------------------------------------------- */
+  /* STEP 2 — detect                                                 */
+  /* -------------------------------------------------------------- */
+
+  const handleDetect = async () => {
+    if (!spillId || detecting) return;
+
+    setDetecting(true);
+    setDetectionError("");
+
+    try {
+      const result = await detectSpill(spillId);
+
+      setDetectionResult(result);
+
+      saveInvestigationData(spillId, {
+        upload: uploadResult,
+        fileName: selectedFile?.name,
+        detection: result,
+      });
+    } catch (err) {
+      setDetectionError(getApiError(err).message);
+    } finally {
+      setDetecting(false);
+    }
+  };
+
+  const handleGoToInvestigation = () => {
+    if (!spillId) return;
+
+    navigate(`/investigation/${encodeURIComponent(spillId)}`);
+  };
 
   return (
     <section className="upload-page">
-
       <div className="page-header">
         <div>
+          <p className="eyebrow">SPILLTRACE / DATA INGESTION</p>
 
-          <p className="eyebrow">
-            SPILLTRACE / DATA INGESTION
-          </p>
-
-          <h1>
-            Upload SAR Scene
-          </h1>
+          <h1>Upload SAR Scene</h1>
 
           <p className="page-description">
-            Register a SAR file, connect it to an available scene, and start the backend detector. The browser never performs ML inference itself.
+            Upload a SAR file, then run detection against it. The file is
+            only sent to the backend once — detection runs against the copy
+            the backend already saved on disk, not a fresh upload.
           </p>
-
         </div>
       </div>
 
-
       <div className="upload-grid">
-
         <div className="upload-card">
+          <div className="upload-icon">↑</div>
 
-          <div className="upload-icon">
-            ↑
-          </div>
+          <h2>1. Select &amp; Upload SAR Image</h2>
 
-          <h2>
-            Select SAR Image
-          </h2>
-
-          <p>
-            GeoTIFF (.tif / .tiff) is required by the current real detector.
-          </p>
-
-
-          <label
-            className="metadata-item"
-            style={{
-              display: "block",
-              marginBottom: 12,
-            }}
-          >
-            <span>
-              SAR Scene
-            </span>
-
-            <select
-              value={sceneId}
-              onChange={(e) =>
-                setSceneId(
-                  e.target.value
-                )
-              }
-              disabled={
-                loading ||
-                scenes.length === 0
-              }
-              style={{
-                width: "100%",
-                padding: "8px",
-                background:
-                  "#0a1927",
-                color: "inherit",
-                border:
-                  "1px solid #35506a",
-              }}
-            >
-
-              {scenes.length ===
-                0 && (
-                <option value="">
-                  No backend scenes available
-                </option>
-              )}
-
-              {scenes.map(
-                (scene) => (
-                  <option
-                    key={
-                      scene.scene_id
-                    }
-                    value={
-                      scene.scene_id
-                    }
-                  >
-                    {
-                      scene.scene_id
-                    }{" "}
-                    —{" "}
-                    {
-                      scene.source ||
-                      "Unknown source"
-                    }
-                  </option>
-                )
-              )}
-
-            </select>
-          </label>
-
+          <p>GeoTIFF (.tif / .tiff) is required by the current detector.</p>
 
           <label className="file-picker">
-
-            <span>
-              {selectedFile
-                ? "Change File"
-                : "Choose GeoTIFF"}
-            </span>
+            <span>{selectedFile ? "Change File" : "Choose GeoTIFF"}</span>
 
             <input
               type="file"
               accept=".tif,.tiff,image/tiff"
-              onChange={
-                handleFileChange
-              }
-              disabled={
-                loading
-              }
+              onChange={handleFileChange}
+              disabled={uploading || detecting}
             />
-
           </label>
-
 
           {selectedFile && (
             <div className="selected-file">
-
               <div>
-
-                <span className="file-label">
-                  SELECTED FILE
-                </span>
-
-                <strong>
-                  {
-                    selectedFile.name
-                  }
-                </strong>
-
+                <span className="file-label">SELECTED FILE</span>
+                <strong>{selectedFile.name}</strong>
                 <small>
-                  {(
-                    selectedFile.size /
-                    1024 /
-                    1024
-                  ).toFixed(2)}{" "}
-                  MB
+                  {(selectedFile.size / 1024 / 1024).toFixed(2)} MB
                 </small>
-
               </div>
 
               <span className="file-status">
-                READY
+                {spillId ? "UPLOADED" : "READY"}
               </span>
-
             </div>
           )}
 
-
-          {stage && (
-            <div className="loading-state">
-              {stage}
-            </div>
-          )}
-
-
-          {error && (
+          {fileError && (
             <div className="upload-error">
-
-              <strong>
-                Processing failed
-              </strong>
-
-              <p>
-                {error}
-              </p>
-
-              <small>
-                If the backend reports detector import/model errors, the ML runtime on the backend still needs to be completed.
-              </small>
-
+              <p>{fileError}</p>
             </div>
           )}
-
 
           <button
             className="primary-button"
-            onClick={
-              handleStart
-            }
-            disabled={
-              !selectedFile ||
-              !sceneId ||
-              loading
-            }
+            onClick={handleUpload}
+            disabled={!selectedFile || uploading || !!spillId}
           >
-            {loading
-              ? "Processing…"
-              : "Upload & Run Detection"}
+            {uploading
+              ? "Uploading…"
+              : spillId
+                ? "Uploaded"
+                : "Upload File"}
           </button>
 
+          {uploadError && (
+            <div className="upload-error">
+              <strong>Upload failed</strong>
+              <p>{uploadError}</p>
+            </div>
+          )}
 
-          <p className="upload-note">
-            Upload response → server saved_path → real detection job → status polling → investigation workspace.
+          {uploadResult && (
+            <div className="metadata-item" style={{ marginTop: 12 }}>
+              <span>Spill ID</span>
+              <strong>{uploadResult.spill_id}</strong>
+            </div>
+          )}
+
+          <hr style={{ margin: "20px 0", borderColor: "#1c3548" }} />
+
+          <h2>2. Run Detection</h2>
+
+          <p>
+            Triggers detection on the file already saved by the backend — no
+            file is uploaded again.
           </p>
 
+          <button
+            className="primary-button"
+            onClick={handleDetect}
+            disabled={!spillId || detecting}
+            title={
+              !spillId
+                ? "Upload a file first to get a spill_id."
+                : undefined
+            }
+          >
+            {detecting ? "Running detector…" : "Run Detection"}
+          </button>
+
+          {!spillId && (
+            <p className="upload-note">
+              Detect is disabled until upload succeeds and a spill_id is
+              available.
+            </p>
+          )}
+
+          {detectionError && (
+            <div className="upload-error">
+              <strong>Detection request failed</strong>
+              <p>{detectionError}</p>
+            </div>
+          )}
+
+          {detectionResult && (
+            <div className="metric-grid" style={{ marginTop: 12 }}>
+              <div>
+                <span>Status</span>
+                <strong>{detectionResult.status}</strong>
+              </div>
+
+              <div>
+                <span>Message</span>
+                <strong>{detectionResult.message}</strong>
+              </div>
+
+              <div>
+                <span>Area</span>
+                <strong>
+                  {detectionResult.area_sq_km != null
+                    ? `${Number(detectionResult.area_sq_km).toFixed(2)} km²`
+                    : "Not provided by backend"}
+                </strong>
+              </div>
+
+              <div>
+                <span>Detected At</span>
+                <strong>
+                  {detectionResult.detected_at
+                    ? new Date(detectionResult.detected_at).toLocaleString()
+                    : "Not provided by backend"}
+                </strong>
+              </div>
+
+              <div>
+                <span>Slick Geometry</span>
+                <strong>
+                  {detectionGeojson?.features?.length
+                    ? `${detectionGeojson.features.length} feature(s) — view on map in the investigation workspace`
+                    : "No slick geometry above threshold"}
+                </strong>
+              </div>
+            </div>
+          )}
+
+          {spillId && (
+            <button
+              className="secondary-button"
+              onClick={handleGoToInvestigation}
+              style={{ marginTop: 12 }}
+            >
+              Go to Investigation Workspace
+            </button>
+          )}
+
+          <p className="upload-note">
+            Upload → spill_id → POST /api/spills/&#123;spill_id&#125;/detect →
+            detection response → investigation workspace.
+          </p>
         </div>
       </div>
-
     </section>
   );
 }
