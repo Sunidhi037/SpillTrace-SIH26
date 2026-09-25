@@ -1,135 +1,128 @@
 import { useState } from "react";
 
 /**
- * DriftControls
- *
- * Collects the DriftParametersRequest fields the backend actually
- * requires (app/schemas/drift.py) and triggers hindcast/forecast.
- * Only wind_speed_mps, wind_direction_from_deg, current_speed_mps
- * and current_direction_to_deg are required by the schema; everything
- * else has a server-side default we mirror here for clarity.
+ * Drift inputs + the two actions. Parameters are analyst-supplied (the
+ * backend schema requires them); the defaults below mirror the backend's own
+ * defaults and are not measured data. Fully controlled by DriftPanel.
  */
 
-const DEFAULT_PARAMS = {
-  wind_speed_mps: 5,
-  wind_direction_from_deg: 270,
-  current_speed_mps: 0.5,
-  current_direction_to_deg: 90,
-  timestep_minutes: 60,
-  duration_hours: 24,
-  wind_drift_coefficient: 0.03,
-  current_coefficient: 1.0,
-  particle_count: 100,
-  diffusion_mps: 25,
-  random_seed: 42,
-  mode: "analyst_parameter_driven",
-  vector_source: "analyst_input",
-};
+const FIELDS = [
+  ["wind_speed_mps", "Wind speed (m/s)", { min: 0, step: 0.1 }],
+  ["wind_direction_from_deg", "Wind from (°)", { min: 0, max: 359 }],
+  ["current_speed_mps", "Current speed (m/s)", { min: 0, step: 0.1 }],
+  ["current_direction_to_deg", "Current toward (°)", { min: 0, max: 359 }],
+  ["duration_hours", "Duration (h)", { min: 1, max: 720 }],
+  ["timestep_minutes", "Timestep (min)", { min: 1, max: 1440 }],
+];
 
-function DriftControls({ onRunHindcast, onRunForecast, hindcastLoading, forecastLoading, disabledReason }) {
-  const [params, setParams] = useState(DEFAULT_PARAMS);
+const fmt = (v, d = 1) => (Number.isFinite(Number(v)) ? Number(v).toFixed(d) : "—");
 
-  const update = (field, value) => setParams((prev) => ({ ...prev, [field]: value }));
-
-  const disabled = !!disabledReason;
+function DriftControls({
+  params,
+  onChange,
+  onRunHindcast,
+  onRunForecast,
+  hindcastLoading,
+  forecastLoading,
+  hindcastDone,
+  forecastDone,
+  blockedReason,
+}) {
+  const [editing, setEditing] = useState(false);
+  const blocked = !!blockedReason;
 
   return (
     <div className="drift-controls">
-      <div className="section-label">DRIFT PARAMETERS</div>
+      <div className="drift-summary">
+        <div className="drift-summary-head">
+          <span className="label">Environmental inputs</span>
+          <button type="button" className="link-button" onClick={() => setEditing((v) => !v)}>
+            {editing ? "Done" : "Edit"}
+          </button>
+        </div>
 
-      {disabled && <div className="empty-state">{disabledReason}</div>}
+        {!editing ? (
+          <div className="drift-summary-grid">
+            <div>
+              <span className="kv-label">Wind</span>
+              <strong>{fmt(params.wind_speed_mps)} m/s</strong>
+              <small>from {fmt(params.wind_direction_from_deg, 0)}°</small>
+            </div>
+            <div>
+              <span className="kv-label">Current</span>
+              <strong>{fmt(params.current_speed_mps)} m/s</strong>
+              <small>toward {fmt(params.current_direction_to_deg, 0)}°</small>
+            </div>
+            <div>
+              <span className="kv-label">Simulation</span>
+              <strong>{fmt(params.duration_hours, 0)} hours</strong>
+              <small>{fmt(params.timestep_minutes, 0)} min timestep</small>
+            </div>
+          </div>
+        ) : (
+          <div className="drift-fields">
+            {FIELDS.map(([field, label, attrs]) => (
+              <label key={field} className="field">
+                <span>{label}</span>
+                <input
+                  type="number"
+                  {...attrs}
+                  value={params[field]}
+                  onChange={(e) => onChange(field, Number(e.target.value))}
+                />
+              </label>
+            ))}
+          </div>
+        )}
 
-      <div className="metadata-grid">
-        <label className="metadata-item">
-          <span>Wind speed (m/s)</span>
-          <input
-            type="number"
-            min="0"
-            value={params.wind_speed_mps}
-            onChange={(e) => update("wind_speed_mps", Number(e.target.value))}
-            disabled={disabled}
-          />
-        </label>
-
-        <label className="metadata-item">
-          <span>Wind direction FROM (°)</span>
-          <input
-            type="number"
-            min="0"
-            max="359"
-            value={params.wind_direction_from_deg}
-            onChange={(e) => update("wind_direction_from_deg", Number(e.target.value))}
-            disabled={disabled}
-          />
-        </label>
-
-        <label className="metadata-item">
-          <span>Current speed (m/s)</span>
-          <input
-            type="number"
-            min="0"
-            value={params.current_speed_mps}
-            onChange={(e) => update("current_speed_mps", Number(e.target.value))}
-            disabled={disabled}
-          />
-        </label>
-
-        <label className="metadata-item">
-          <span>Current direction TO (°)</span>
-          <input
-            type="number"
-            min="0"
-            max="359"
-            value={params.current_direction_to_deg}
-            onChange={(e) => update("current_direction_to_deg", Number(e.target.value))}
-            disabled={disabled}
-          />
-        </label>
-
-        <label className="metadata-item">
-          <span>Duration (hours)</span>
-          <input
-            type="number"
-            min="1"
-            max="720"
-            value={params.duration_hours}
-            onChange={(e) => update("duration_hours", Number(e.target.value))}
-            disabled={disabled}
-          />
-        </label>
-
-        <label className="metadata-item">
-          <span>Timestep (minutes)</span>
-          <input
-            type="number"
-            min="1"
-            max="1440"
-            value={params.timestep_minutes}
-            onChange={(e) => update("timestep_minutes", Number(e.target.value))}
-            disabled={disabled}
-          />
-        </label>
+        <p className="footnote">
+          Analyst-supplied parameters (backend defaults shown), not measured environmental data.
+        </p>
       </div>
 
       <div className="drift-actions">
-        <button
-          type="button"
-          className="secondary-button"
-          onClick={() => onRunHindcast(params)}
-          disabled={disabled || hindcastLoading}
-        >
-          {hindcastLoading ? "Running Hindcast…" : "Run Hindcast"}
-        </button>
+        <div className="action">
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={onRunHindcast}
+            disabled={blocked || hindcastLoading}
+          >
+            {hindcastLoading ? (
+              <>
+                <span className="spinner spinner-xs" aria-hidden="true" /> RUNNING HINDCAST…
+              </>
+            ) : hindcastDone ? (
+              "RE-RUN HINDCAST"
+            ) : (
+              "RUN HINDCAST"
+            )}
+          </button>
+          <small>Reconstructs the probable origin region by moving backward from the detected slick.</small>
+        </div>
 
-        <button
-          type="button"
-          className="secondary-button"
-          onClick={() => onRunForecast(params)}
-          disabled={disabled || forecastLoading}
-        >
-          {forecastLoading ? "Running Forecast…" : "Run Forecast"}
-        </button>
+        <div className="action">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={onRunForecast}
+            disabled={blocked || forecastLoading}
+          >
+            {forecastLoading ? (
+              <>
+                <span className="spinner spinner-xs" aria-hidden="true" /> RUNNING FORECAST…
+              </>
+            ) : forecastDone ? (
+              "RE-RUN FORECAST"
+            ) : (
+              "RUN FORECAST"
+            )}
+          </button>
+          <small>Simulates future slick movement from the detected region.</small>
+        </div>
       </div>
+
+      {blocked && <p className="prereq-note">{blockedReason}</p>}
     </div>
   );
 }

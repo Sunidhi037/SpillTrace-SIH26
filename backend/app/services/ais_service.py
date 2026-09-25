@@ -22,7 +22,7 @@ REAL_PARQUET_FILES = [
 # Synthetic AIS is available only through an explicit scenario_id. It is
 # deliberately not a fallback for missing real AIS data.
 SYNTHETIC_SCENARIOS_DIR = REPO_ROOT / "ml" / "synthetic_demo_outputs"
-_SCENARIO_ID_RE = re.compile(r"^SPILL_SYNTHETIC_DEMO_TEST[1-5]$")
+_SCENARIO_ID_RE = re.compile(r"^SPILL_SYNTHETIC_DEMO_[A-Z0-9_-]+$")
 
 
 def _relative_path_label(path: Path) -> str:

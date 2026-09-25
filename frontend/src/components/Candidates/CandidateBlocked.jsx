@@ -1,47 +1,30 @@
-/**
- * CandidateBlocked
- *
- * Shown whenever candidate ranking cannot run — either because scene
- * compatibility is not PASS, or because POST .../candidates/rank
- * returned HTTP 409 (COMPATIBILITY_FAILED, see
- * app/services/candidate_service.py::_blocked_error).
- *
- * Always prefers the backend's own reason text over the hardcoded
- * fallback sentence.
- */
+import { ErrorNotice } from "../ui/Feedback";
 
-function CandidateBlocked({ reason, details }) {
+/**
+ * Shown when ranking cannot run or the backend rejects it (e.g. HTTP 409
+ * COMPATIBILITY_FAILED). Prefers the backend's own reason text.
+ */
+function CandidateBlocked({ reason, details, onRetry }) {
   return (
     <div className="candidate-blocked">
-      <strong>Candidate ranking unavailable</strong>
-      <p>
-        {reason ||
-          "Candidate attribution is unavailable for this investigation because the SAR/drift reference time and available AIS data do not satisfy the temporal compatibility requirement."}
-      </p>
+      <ErrorNotice
+        title="CANDIDATE RANKING UNAVAILABLE"
+        message="Candidate vessels could not be ranked for this investigation."
+        reason={reason}
+        onRetry={onRetry}
+      />
 
       {details && (
-        <div className="quality-reasons">
-          <div className="quality-reasons-title">Backend Compatibility Details</div>
-          {details.temporal_overlap !== undefined && (
-            <div className="quality-note">Temporal overlap: {String(details.temporal_overlap)}</div>
-          )}
-          {details.geographic_overlap !== undefined && (
-            <div className="quality-note">Geographic overlap: {String(details.geographic_overlap)}</div>
-          )}
-          {details.crs_valid !== undefined && <div className="quality-note">CRS valid: {String(details.crs_valid)}</div>}
+        <ul className="reason-list">
+          {details.temporal_overlap !== undefined && <li>Temporal overlap: {String(details.temporal_overlap)}</li>}
+          {details.geographic_overlap !== undefined && <li>Geographic overlap: {String(details.geographic_overlap)}</li>}
+          {details.crs_valid !== undefined && <li>CRS valid: {String(details.crs_valid)}</li>}
           {details.environmental_coverage !== undefined && (
-            <div className="quality-note">Environmental coverage: {String(details.environmental_coverage)}</div>
+            <li>Environmental coverage: {String(details.environmental_coverage)}</li>
           )}
-          {Array.isArray(details.reasons) &&
-            details.reasons.map((r, i) => (
-              <div className="quality-note" key={i}>
-                {r}
-              </div>
-            ))}
-        </div>
+          {Array.isArray(details.reasons) && details.reasons.map((r, i) => <li key={i}>{r}</li>)}
+        </ul>
       )}
-
-      <div className="empty-state">No fake candidates or AIS tracks are shown while attribution is blocked.</div>
     </div>
   );
 }

@@ -1,53 +1,37 @@
-import { useNavigate } from "react-router-dom";
+import { useMatch, useNavigate } from "react-router-dom";
+import { shortId } from "../utils/format";
 
 function Header() {
   const navigate = useNavigate();
+  const match = useMatch("/investigation/:id");
+  const investigationId = match?.params?.id;
 
   return (
     <header className="app-header">
-      <div className="header-left">
-        <button
-          className="brand"
-          onClick={() => navigate("/")}
-          aria-label="Go to SpillTrace dashboard"
-        >
-          <span className="brand-mark">ST</span>
-
-          <div className="brand-text">
-            <span className="brand-name">SpillTrace</span>
-            <span className="brand-subtitle">
-              MARINE INTELLIGENCE
-            </span>
-          </div>
-        </button>
-      </div>
+      <button className="brand" onClick={() => navigate("/dashboard")} aria-label="SpillTrace — new investigation">
+        <span className="brand-mark">ST</span>
+        <span className="brand-text">
+          <span className="brand-name">SPILLTRACE</span>
+          <span className="brand-subtitle">MARINE INTELLIGENCE</span>
+        </span>
+      </button>
 
       <div className="header-center">
-        <span className="system-indicator"></span>
-
-        <span className="system-status">
-          INVESTIGATION SYSTEM
-        </span>
-
-        <span className="status-divider">/</span>
-
-        <span className="system-mode">
-          DEMO ENVIRONMENT
-        </span>
+        <span className="system-status">INVESTIGATION SYSTEM</span>
+        {investigationId && (
+          <>
+            <span className="status-divider">/</span>
+            <span className="investigation-chip mono" title={investigationId}>
+              {shortId(decodeURIComponent(investigationId), 12)}
+            </span>
+          </>
+        )}
       </div>
 
       <div className="header-right">
-        <div className="header-info">
-          <span className="info-label">SIH 2026</span>
-          <span className="info-value">PS 26143</span>
-        </div>
-
-        <button
-          className="header-upload-button"
-          onClick={() => navigate("/upload")}
-        >
-          <span>+</span>
-          New Investigation
+        <span className="header-info">SIH 2026 · PS 26143</span>
+        <button className="btn btn-primary btn-sm" onClick={() => navigate("/upload")}>
+          + New Investigation
         </button>
       </div>
     </header>

@@ -1,7 +1,10 @@
+import { useState } from "react";
 import {
   BrowserRouter,
-  Routes,
+  Navigate,
   Route,
+  Routes,
+  useLocation,
 } from "react-router-dom";
 
 import Header from "./components/Header";
@@ -14,46 +17,43 @@ import Investigation from "./pages/Investigation";
 
 import "./App.css";
 
+function Shell() {
+  const { pathname } = useLocation();
+  const isInvestigation = pathname.startsWith("/investigation/");
+
+  // The nav rail collapses on the investigation workspace to give the map
+  // room; the user can override that either way.
+  const [navPref, setNavPref] = useState(null);
+  const collapsed = navPref ?? isInvestigation;
+
+  return (
+    <div className="app">
+      <Header />
+
+      <div className="app-body">
+        <Sidebar collapsed={collapsed} onToggle={() => setNavPref(!collapsed)} />
+
+        <main className={`main-content ${isInvestigation ? "main-investigation" : ""}`}>
+          <Routes>
+            {/* The application opens on the product dashboard; investigations start from there. */}
+            <Route path="/" element={<Navigate to="/dashboard" replace />} />
+            <Route path="/upload" element={<Upload />} />
+            <Route path="/dashboard" element={<Home />} />
+            <Route path="/investigation/:id" element={<Investigation />} />
+            <Route path="*" element={<Navigate to="/upload" replace />} />
+          </Routes>
+
+          {!isInvestigation && <Footer />}
+        </main>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   return (
     <BrowserRouter>
-      <div className="app">
-
-        <Header />
-
-        <div className="app-body">
-
-          <Sidebar />
-
-          <main className="main-content">
-
-            <Routes>
-
-              <Route
-                path="/"
-                element={<Home />}
-              />
-
-              <Route
-                path="/upload"
-                element={<Upload />}
-              />
-
-              <Route
-                path="/investigation/:id"
-                element={
-                  <Investigation />
-                }
-              />
-
-            </Routes>
-
-          </main>
-        </div>
-
-        <Footer />
-
-      </div>
+      <Shell />
     </BrowserRouter>
   );
 }

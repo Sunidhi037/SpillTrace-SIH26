@@ -235,3 +235,172 @@ export function normalizeCandidateResponse(
 
   return null;
 }
+
+
+/* ------------------------------------------------------------------ */
+/* Session patching                                                    */
+/* ------------------------------------------------------------------ */
+
+export function patchInvestigationData(id, patch) {
+  if (!id) return;
+  const current = loadInvestigationData(id) || {};
+  saveInvestigationData(id, { ...current, ...patch });
+}
+
+/* ------------------------------------------------------------------ */
+/* Backend shape adapters (moved out of pages/Investigation.jsx)       */
+/* ------------------------------------------------------------------ */
+
+export function normalizeCompatibility(value) {
+  if (!value) return null;
+
+  return {
+    ...value,
+    status:
+      value.status ||
+      (value.compatible === true
+        ? "pass"
+        : value.compatible === false
+          ? "blocked"
+          : "unknown"),
+  };
+}
+
+// The live detect endpoint returns SpillResponse (lowercase custom status,
+// area_sq_km/detected_at at top level, no .metadata). This adapter maps it
+// onto the DetectionResponse-like shape the UI reads.
+const DETECTION_STATUS_MAP = {
+  DETECTED: "COMPLETED",
+  DETECTION_FAILED: "FAILED",
+  UPLOADED: "QUEUED",
+};
+
+export function normalizeDetectionJob(job) {
+  if (!job) return null;
+
+  const geo = normalizeDetectionGeometry(job);
+
+  const rawStatus = String(job.status || "").toUpperCase();
+  const status = DETECTION_STATUS_MAP[rawStatus] || rawStatus || "UNKNOWN";
+
+  const centroid =
+    job.metadata?.centroid || (geo ? getGeoJSONCentroid(geo) : null);
+
+  const metadata = job.metadata || {
+    detector_name: job.detector_name || null,
+    area_sq_km: job.area_sq_km ?? null,
+    centroid,
+    extra: { area_sq_km: job.area_sq_km ?? null },
+  };
+
+  return {
+    ...job,
+    status,
+    metadata,
+    geojson: geo,
+    isMock: job.isMock === true,
+  };
+}
+
+export function geometryProperties(job) {
+  const metadata = job?.metadata || {};
+  const extra = metadata?.extra || {};
+
+  return {
+    centroid: metadata.centroid || null,
+    area_sq_km:
+      extra.area_sq_km ??
+      extra.area_km2 ??
+      metadata.area_sq_km ??
+      metadata.area_km2 ??
+      null,
+    perimeter_m: extra.perimeter_m ?? metadata.perimeter_m ?? null,
+    confidence:
+      extra.confidence ??
+      extra.mean_probability ??
+      metadata.confidence ??
+      metadata.mean_probability ??
+      null,
+  };
+}
+
+export function findTrackForCandidate(geojson, candidate) {
+  if (!geojson || !candidate) return null;
+
+  const features = geojson.features || [];
+
+  const targetIds = [candidate.mmsi, candidate.candidate_id, candidate.vessel_id]
+    .filter(Boolean)
+    .map(String);
+
+  if (!targetIds.length) return null;
+
+  return (
+    features.find((feature) => {
+      const properties = feature?.properties || {};
+      const values = [
+        properties.mmsi,
+        properties.candidate_id,
+        properties.vessel_id,
+      ]
+        .filter(Boolean)
+        .map(String);
+      return values.some((value) => targetIds.includes(value));
+    }) || null
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Track helpers                                                       */
+/* ------------------------------------------------------------------ */
+
+export function featureCount(geojson) {
+  return featureCollectionToFeatures(geojson).length;
+}
+
+/**
+ * Returns [{ timestamp, lat, lon, sog, cog, heading }] for a track feature.
+ * The AIS service stores history in properties.positions
+ * ({timestamp_utc, latitude, longitude, sog_knots, cog_deg, heading_deg}).
+ * Falls back to parallel timestamp arrays + LineString coordinates.
+ */
+export function getTrackPositions(track) {
+  if (!track) return [];
+  const p = track.properties || {};
+
+  if (Array.isArray(p.positions) && p.positions.length) {
+    return p.positions.map((pos) => ({
+      timestamp: pos.timestamp_utc ?? null,
+      lat: pos.latitude ?? null,
+      lon: pos.longitude ?? null,
+      sog: pos.sog_knots ?? null,
+      cog: pos.cog_deg ?? null,
+      heading: pos.heading_deg ?? null,
+    }));
+  }
+
+  const stamps = p.timestamps_utc ?? p.timestamps ?? p.time ?? p.times ?? [];
+  const coords = track.geometry?.coordinates;
+
+  if (Array.isArray(stamps) && stamps.length) {
+    const line =
+      track.geometry?.type === "LineString" && Array.isArray(coords)
+        ? coords
+        : [];
+    return stamps.map((timestamp, i) => ({
+      timestamp,
+      lat: line[i]?.[1] ?? null,
+      lon: line[i]?.[0] ?? null,
+      sog: null,
+      cog: null,
+      heading: null,
+    }));
+  }
+
+  return [];
+}
+
+export function trackKey(feature) {
+  const p = feature?.properties || {};
+  return p.mmsi != null ? String(p.mmsi) : null;
+}

@@ -26,7 +26,7 @@ DISCLOSURE_STATEMENT = (
     "the explainable algorithm and are not real-world vessel attribution."
 )
 
-SAR_DIR = Path("data/sar")
+SAR_DIR = Path("backend/data/sar")
 OUTPUT_BASE_DIR = Path("ml/synthetic_demo_outputs")
 MANIFEST_DIR = Path("data/manifests")
 

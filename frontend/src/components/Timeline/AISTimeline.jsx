@@ -1,49 +1,52 @@
-/**
- * AISTimeline
- *
- * Scrubs through a selected candidate's AIS track timestamps.
- * timestamps_utc[i] corresponds to coordinates[i] — no interpolation
- * is ever performed; the slider only ever snaps to real indices.
- *
- * Since no AIS source exists on this backend yet, `timestamps` will
- * normally be empty and this renders the explicit unavailable state.
- */
+import { NA, formatUtc } from "../../utils/format";
 
-function AISTimeline({ timestamps, selectedIndex, onChange }) {
-  if (!Array.isArray(timestamps) || timestamps.length === 0) {
-    return (
-      <div className="timeline-section">
-        <div className="timeline-header">
-          <h2>Timeline</h2>
-        </div>
-        <div className="empty-state">No AIS timestamps available for this candidate.</div>
-      </div>
-    );
+/**
+ * Scrubs through the selected candidate's real AIS position history.
+ * positions[i] is one backend-reported fix; the slider only snaps to real
+ * indices (no interpolation) and the same fix is marked on the map.
+ */
+function AISTimeline({ positions, selectedIndex, onChange }) {
+  if (!Array.isArray(positions) || positions.length === 0) {
+    return <p className="muted">No AIS position history is available for this candidate.</p>;
   }
 
-  const current = timestamps[selectedIndex] ?? timestamps[0];
+  const idx = Math.min(selectedIndex, positions.length - 1);
+  const cur = positions[idx];
+  const first = positions[0];
+  const last = positions[positions.length - 1];
 
   return (
-    <div className="timeline-section">
-      <div className="timeline-header">
-        <h2>Timeline</h2>
-        <strong>{current}</strong>
+    <div className="timeline">
+      <div className="timeline-current">
+        <strong>{formatUtc(cur.timestamp)}</strong>
+        <small>
+          {cur.lat != null && cur.lon != null
+            ? `${Number(cur.lat).toFixed(4)}, ${Number(cur.lon).toFixed(4)}`
+            : NA}
+          {cur.sog != null ? ` · ${cur.sog} kn` : ""}
+          {cur.cog != null ? ` · COG ${cur.cog}°` : ""}
+        </small>
       </div>
 
       <input
         type="range"
         className="timeline-slider"
         min={0}
-        max={timestamps.length - 1}
+        max={positions.length - 1}
         step={1}
-        value={selectedIndex}
+        value={idx}
         onChange={(e) => onChange(Number(e.target.value))}
+        aria-label="AIS position history"
       />
 
-      <div className="timeline-labels">
-        <span>{timestamps[0]}</span>
-        <span>{timestamps[timestamps.length - 1]}</span>
+      <div className="timeline-ends">
+        <span>{formatUtc(first.timestamp, { withYear: false })}</span>
+        <span>
+          {idx + 1} / {positions.length}
+        </span>
+        <span>{formatUtc(last.timestamp, { withYear: false })}</span>
       </div>
+      <p className="hint">Selected position is marked on the map.</p>
     </div>
   );
 }

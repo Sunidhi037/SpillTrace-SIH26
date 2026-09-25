@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useParams } from "react-router-dom";
 
 import {
   createInvestigationReport,
@@ -8,281 +8,133 @@ import {
   getAisTracks,
   getApiError,
   getCandidateDetail,
-  getCandidates,
   getScenes,
   getSceneCompatibility,
   getSceneManifest,
   getSpill,
   rankCandidates,
-  resolveApiUrl,
   runForecast,
   runHindcast,
 } from "../services/api";
 
-import SceneSelector from "../components/Scenario/SceneSelector";
-import SceneMetadata from "../components/Scenario/SceneMetadata";
+import Section from "../components/ui/Section";
 import CompatibilityStatus from "../components/Scenario/CompatibilityStatus";
-
-import AISQualityPanel from "../components/AIS/AISQualityPanel";
-import AISTrackInfo from "../components/AIS/AISTrackInfo";
-
-import DetectionStatus from "../components/Detection/DetectionStatus";
-import SlickMetrics from "../components/Detection/SlickMetrics";
-
-import DriftControls from "../components/Drift/DriftControls";
-
+import SceneMetadata from "../components/Scenario/SceneMetadata";
+import DetectionCard from "../components/Detection/DetectionCard";
+import DriftPanel from "../components/Drift/DriftPanel";
+import AisPanel from "../components/AIS/AisPanel";
+import CandidatePanel from "../components/Candidates/CandidatePanel";
+import EvidenceDrawer from "../components/Candidates/EvidenceDrawer";
+import AISTimeline from "../components/Timeline/AISTimeline";
+import InvestigationHeader from "../components/Investigation/InvestigationHeader";
+import InvestigationSummary from "../components/Investigation/InvestigationSummary";
 import InvestigationMap from "../components/Map/InvestigationMap";
 import MapLayers from "../components/Map/MapLayers";
 import MapLegend from "../components/Map/MapLegend";
 
-import CandidateList from "../components/Candidates/CandidateList";
-import CandidateBlocked from "../components/Candidates/CandidateBlocked";
-import EvidenceDrawer from "../components/Candidates/EvidenceDrawer";
-
-import AISTimeline from "../components/Timeline/AISTimeline";
-
 import {
+  featureCount,
+  findTrackForCandidate,
+  geometryProperties,
+  getTrackPositions,
   loadInvestigationData,
   normalizeAisResponse,
-  normalizeCandidateResponse,
-  normalizeDetectionGeometry,
+  normalizeCompatibility,
+  normalizeDetectionJob,
   normalizeGeoJSON,
-  getGeoJSONCentroid,
-  saveInvestigationData,
+  patchInvestigationData,
+  trackKey,
 } from "../utils/investigation";
+import { computeStages } from "../utils/stages";
+import { buildReportPayload, buildLocalInvestigationReportHtml } from "../utils/report";
 
-/* -------------------------------------------------------------------------- */
-/* Helpers                                                                    */
-/* -------------------------------------------------------------------------- */
-
-function normalizeCompatibility(value) {
-  if (!value) return null;
-
-  return {
-    ...value,
-    status:
-      value.status ||
-      (value.compatible === true
-        ? "pass"
-        : value.compatible === false
-          ? "blocked"
-          : "unknown"),
-  };
-}
-
-// Backend has two different-shaped detect responses (see detectSpill()'s
-// doc comment in services/api.js). This UI is written against the
-// DetectionResponse job shape (uppercase status, .metadata with
-// centroid/area_sq_km/etc) -- this adapter normalizes the ACTUAL live
-// response (SpillResponse: lowercase custom status, area_sq_km/detected_at
-// at the top level, no .metadata at all) into that same shape, so
-// everything else in this file (SlickMetrics, DetectionStatus, report
-// export, drift centroid lookup, ...) keeps working unchanged regardless
-// of which one came back.
-const DETECTION_STATUS_MAP = {
-  DETECTED: "COMPLETED",
-  DETECTION_FAILED: "FAILED",
-  UPLOADED: "QUEUED",
+const SECTION_FOR_STAGE = {
+  detection: "detection",
+  hindcast: "drift",
+  forecast: "drift",
+  ais: "ais",
+  ranking: "candidates",
+  evidence: "evidence",
 };
 
-function normalizeDetectionJob(job) {
-  if (!job) return null;
+function resolveCandidateTrack(candidate, aisTracksGeojson) {
+  if (!candidate) return null;
 
-  const geo = normalizeDetectionGeometry(job);
-
-  const rawStatus = String(job.status || "").toUpperCase();
-  const status = DETECTION_STATUS_MAP[rawStatus] || rawStatus || "UNKNOWN";
-
-  const centroid =
-    job.metadata?.centroid ||
-    (geo ? getGeoJSONCentroid(geo) : null);
-
-  const metadata = job.metadata || {
-    detector_name: job.detector_name || "SpillTrace Detector",
-    area_sq_km: job.area_sq_km ?? null,
-    centroid,
-    extra: { area_sq_km: job.area_sq_km ?? null },
-  };
-
-  return {
-    ...job,
-    status,
-    metadata,
-    geojson: geo,
-    isMock: job.isMock === true,
-  };
-}
-
-function geometryProperties(job) {
-  const metadata = job?.metadata || {};
-  const extra = metadata?.extra || {};
-
-  return {
-    centroid: metadata.centroid || null,
-
-    area_sq_km:
-      extra.area_sq_km ??
-      extra.area_km2 ??
-      metadata.area_sq_km ??
-      metadata.area_km2 ??
-      null,
-
-    perimeter_m:
-      extra.perimeter_m ??
-      metadata.perimeter_m ??
-      null,
-
-    confidence:
-      extra.confidence ??
-      extra.mean_probability ??
-      metadata.confidence ??
-      metadata.mean_probability ??
-      null,
-  };
-}
-
-function findTrackForCandidate(geojson, candidate) {
-  if (!geojson || !candidate) return null;
-
-  const features = geojson.features || [];
-
-  const targetIds = [
-    candidate.mmsi,
-    candidate.candidate_id,
-    candidate.vessel_id,
-  ]
-    .filter(Boolean)
-    .map(String);
-
-  if (!targetIds.length) return null;
-
-  return (
-    features.find((feature) => {
-      const properties = feature?.properties || {};
-
-      const values = [
-        properties.mmsi,
-        properties.candidate_id,
-        properties.vessel_id,
-      ]
-        .filter(Boolean)
-        .map(String);
-
-      return values.some((value) => targetIds.includes(value));
-    }) || null
-  );
-}
-
-function extractTrackTimestamps(track) {
-  if (!track) return [];
-
-  const properties = track.properties || {};
-
-  const timestamps =
-    properties.timestamps_utc ??
-    properties.timestamps ??
-    properties.time ??
-    properties.times ??
-    [];
-
-  if (Array.isArray(timestamps)) {
-    return timestamps;
+  // Track embedded directly in the candidate
+  if (candidate.track_reference && typeof candidate.track_reference === "object") {
+    return normalizeGeoJSON(candidate.track_reference);
   }
 
-  return [];
+  // Otherwise find it in the loaded AIS FeatureCollection. (A string
+  // track_reference is only a source pointer, not fetchable geometry.)
+  return findTrackForCandidate(aisTracksGeojson, candidate);
 }
 
-/* -------------------------------------------------------------------------- */
-/* Component                                                                  */
 /* -------------------------------------------------------------------------- */
 
 export default function Investigation() {
   const { id } = useParams();
-  const navigate = useNavigate();
+  // key={id} resets all workflow state when navigating between investigations
+  return <InvestigationView key={id} id={id} />;
+}
 
-  /* ------------------------------------------------------------------------ */
-  /* Scene state                                                              */
-  /* ------------------------------------------------------------------------ */
+function InvestigationView({ id }) {
+  const panelRef = useRef(null);
+  const focusCounter = useRef(0);
+
+  /* ---------------------------- scene state ---------------------------- */
 
   const [scenes, setScenes] = useState([]);
   const [scene, setScene] = useState(null);
   const [manifest, setManifest] = useState(null);
-
   const [sceneLoading, setSceneLoading] = useState(true);
   const [sceneError, setSceneError] = useState(null);
-
   const [compatibility, setCompatibility] = useState(null);
   const [compatibilityLoading, setCompatibilityLoading] = useState(true);
 
-  /* ------------------------------------------------------------------------ */
-  /* Spill / detection                                                        */
-  /* ------------------------------------------------------------------------ */
+  /* ------------------------- spill / detection ------------------------- */
 
   const [spill, setSpill] = useState(null);
-
+  const [spillError, setSpillError] = useState(null);
   const [detection, setDetection] = useState(null);
   const [detectionLoading, setDetectionLoading] = useState(false);
   const [detectionError, setDetectionError] = useState(null);
-
   const [slickGeojson, setSlickGeojson] = useState(null);
+  const slickIsMock = false;
 
-  const [slickIsMock, setSlickIsMock] = useState(false);
-  // No code path sets this to non-null anymore -- the old "demo detection"
-  // endpoint concept is gone now that /api/spills/{id}/detect returns real
-  // area_sq_km directly (see normalizeDetectionJob's metadata shim above
-  // and SlickMetrics.jsx, which reads metadata.extra.area_sq_km first).
-  // Kept only so SlickMetrics' prop signature doesn't need to change.
-  const mockArea = null;
-
-  /* ------------------------------------------------------------------------ */
-  /* Drift                                                                    */
-  /* ------------------------------------------------------------------------ */
+  /* -------------------------------- drift ------------------------------ */
 
   const [hindcastResult, setHindcastResult] = useState(null);
   const [forecastResult, setForecastResult] = useState(null);
-
   const [hindcastLoading, setHindcastLoading] = useState(false);
   const [forecastLoading, setForecastLoading] = useState(false);
+  const [hindcastError, setHindcastError] = useState(null);
+  const [forecastError, setForecastError] = useState(null);
 
-  const [driftError, setDriftError] = useState(null);
-
-  /* ------------------------------------------------------------------------ */
-  /* AIS                                                                      */
-  /* ------------------------------------------------------------------------ */
+  /* --------------------------------- AIS ------------------------------- */
 
   const [aisTracksGeojson, setAisTracksGeojson] = useState(null);
   const [aisLoading, setAisLoading] = useState(false);
   const [aisError, setAisError] = useState(null);
-
   const [selectedAisTrack, setSelectedAisTrack] = useState(null);
 
-  /* ------------------------------------------------------------------------ */
-  /* Candidates                                                               */
-  /* ------------------------------------------------------------------------ */
+  /* ------------------------------ candidates --------------------------- */
 
   const [candidateRun, setCandidateRun] = useState(null);
   const [candidateError, setCandidateError] = useState(null);
-  const [candidateBlockedDetails, setCandidateBlockedDetails] =
-    useState(null);
-
+  const [candidateBlockedDetails, setCandidateBlockedDetails] = useState(null);
   const [candidateLoading, setCandidateLoading] = useState(false);
   const [candidateDetailLoading, setCandidateDetailLoading] = useState(false);
-
   const [selectedCandidateId, setSelectedCandidateId] = useState(null);
 
-  /* ------------------------------------------------------------------------ */
-  /* Timeline / report                                                        */
-  /* ------------------------------------------------------------------------ */
+  /* ------------------------- timeline / report / map ------------------- */
 
   const [timelineIndex, setTimelineIndex] = useState(0);
-
   const [reportLoading, setReportLoading] = useState(false);
   const [reportError, setReportError] = useState(null);
 
-  /* ------------------------------------------------------------------------ */
-  /* Map layers                                                               */
-  /* ------------------------------------------------------------------------ */
-
+  const [basemap, setBasemap] = useState("standard");
+  const [mapFocus, setMapFocus] = useState(null);
   const [layers, setLayers] = useState({
     sarSource: true,
     slick: true,
@@ -293,31 +145,33 @@ export default function Investigation() {
   });
 
   const toggleLayer = useCallback((key) => {
-    setLayers((previous) => ({
-      ...previous,
-      [key]: !previous[key],
-    }));
+    setLayers((prev) => ({ ...prev, [key]: !prev[key] }));
   }, []);
 
-  /* ------------------------------------------------------------------------ */
-  /* Persisted investigation                                                  */
-  /* ------------------------------------------------------------------------ */
+  const requestFocus = useCallback((geojsons, maxZoom) => {
+    focusCounter.current += 1;
+    setMapFocus({ nonce: focusCounter.current, geojsons, maxZoom });
+  }, []);
 
-  const persisted = useMemo(() => {
-    return loadInvestigationData(id);
-  }, [id]);
+  const persisted = useMemo(() => loadInvestigationData(id), [id]);
 
-  const spillId =
-    spill?.spill_id ||
-    persisted?.upload?.spill_id ||
-    id;
+  const spillId = spill?.spill_id || persisted?.upload?.spill_id || id;
 
-  /* ------------------------------------------------------------------------ */
-  /* Load scene                                                               */
-  /* ------------------------------------------------------------------------ */
+  /* ----------------------------- load scene ---------------------------- */
 
   const loadScene = useCallback(async (sceneId) => {
     if (!sceneId) return;
+
+    setAisTracksGeojson(null);
+    setSelectedAisTrack(null);
+    setCandidateRun(null);
+    setSelectedCandidateId(null);
+    patchInvestigationData(id, {
+      sceneId,
+      ais: null,
+      candidateRun: null,
+      selectedCandidateId: null,
+    });
 
     setSceneLoading(true);
     setCompatibilityLoading(true);
@@ -325,34 +179,18 @@ export default function Investigation() {
 
     try {
       const response = await getSceneManifest(sceneId);
-
       setScene(response?.scene || null);
       setManifest(response?.manifest || null);
 
       try {
-        const compatibilityResponse =
-          await getSceneCompatibility(sceneId);
-
-        setCompatibility(
-          normalizeCompatibility(
-            compatibilityResponse?.compatibility
-          )
-        );
-      } catch (compatibilityError) {
+        const compat = await getSceneCompatibility(sceneId);
+        setCompatibility(normalizeCompatibility(compat?.compatibility));
+      } catch (compatError) {
         setCompatibility(null);
-
-        const compatibilityApiError =
-          getApiError(compatibilityError);
-
-        console.warn(
-          "Scene compatibility request failed:",
-          compatibilityApiError.message
-        );
+        console.warn("Scene compatibility request failed:", getApiError(compatError).message);
       }
     } catch (err) {
-      const apiError = getApiError(err);
-
-      setSceneError(apiError.message);
+      setSceneError(getApiError(err).message);
       setScene(null);
       setManifest(null);
       setCompatibility(null);
@@ -360,140 +198,87 @@ export default function Investigation() {
       setSceneLoading(false);
       setCompatibilityLoading(false);
     }
-  }, []);
+  }, [id]);
 
-  /* ------------------------------------------------------------------------ */
-  /* Initial investigation boot                                               */
-  /* ------------------------------------------------------------------------ */
+  /* ------------------------------- boot -------------------------------- */
 
   useEffect(() => {
     let active = true;
 
     async function boot() {
-      setSceneLoading(true);
-      setCompatibilityLoading(true);
-      setSceneError(null);
-      setDetectionError(null);
-      setAisError(null);
-
       const saved = loadInvestigationData(id);
 
-      try {
-        /* Restore previously saved detection */
-
-        if (saved?.detection && active) {
-          const normalized =
-            normalizeDetectionJob(saved.detection);
-
+      // Restore whatever this browser session already produced for this
+      // investigation (real backend responses cached in sessionStorage).
+      if (saved && active) {
+        if (saved.detection) {
+          const normalized = normalizeDetectionJob(saved.detection);
           setDetection(normalized);
-
-          if (normalized.geojson) {
-            setSlickGeojson(normalized.geojson);
-          }
-
-          setSlickIsMock(normalized.isMock === true);
+          if (normalized.geojson) setSlickGeojson(normalized.geojson);
         }
+        if (saved.hindcast) setHindcastResult(saved.hindcast);
+        if (saved.forecast) setForecastResult(saved.forecast);
+        if (saved.ais) setAisTracksGeojson(saved.ais);
+        if (saved.candidateRun) {
+          setCandidateRun(saved.candidateRun);
+          setSelectedCandidateId(
+            saved.selectedCandidateId ||
+              saved.candidateRun.candidates?.[0]?.candidate_id ||
+              null
+          );
+        }
+      }
 
-        /* Load spill */
-
+      // Spill record: failure is non-fatal (direct URLs must still work).
+      try {
         const spillResponse = await getSpill(id);
-
         if (!active) return;
-
         setSpill(spillResponse);
-
-        /* If nothing was cached in this browser session but the backend
-           already has a detection result for this spill_id (survives a
-           hard reload / different tab -- see SpillMetadataResponse's
-           optional geometry/area_sq_km/detected_at fields), hydrate the
-           detection panel from that instead of leaving it empty. */
 
         if (!saved?.detection && spillResponse?.geometry) {
           const hydrated = normalizeDetectionJob({
             spill_id: spillResponse.spill_id,
             status: spillResponse.status,
-            message:
-              spillResponse.message ||
-              "Detection completed.",
+            message: spillResponse.message || "Detection completed.",
             geometry: spillResponse.geometry,
             area_sq_km: spillResponse.area_sq_km,
             detected_at: spillResponse.detected_at,
             detector_name: spillResponse.detector_name,
           });
-
           setDetection(hydrated);
-
-          if (hydrated.geojson) {
-            setSlickGeojson(hydrated.geojson);
-          }
+          if (hydrated.geojson) setSlickGeojson(hydrated.geojson);
         }
+      } catch (err) {
+        if (!active) return;
+        setSpillError(getApiError(err).message);
+      }
 
-        /* Load scene list */
-
+      // Scene: prefer a saved scene, then a scene matching the id, then the first.
+      try {
         const sceneListResponse = await getScenes();
-
         if (!active) return;
 
-        const sceneList =
-          sceneListResponse?.scenes || [];
-
+        const sceneList = sceneListResponse?.scenes || [];
         setScenes(sceneList);
 
-        /* Determine correct scene */
-
-        const savedSceneId = saved?.sceneId;
-
-        let targetSceneId = savedSceneId;
-
-        if (!targetSceneId) {
-          const matchingScene =
-            sceneList.find(
-              (item) => item.scene_id === id
-            );
-
-          targetSceneId =
-            matchingScene?.scene_id ||
-            sceneList[0]?.scene_id ||
-            null;
-        }
+        const targetSceneId =
+          saved?.sceneId ||
+          sceneList.find((item) => item.scene_id === id)?.scene_id ||
+          sceneList[0]?.scene_id ||
+          null;
 
         if (targetSceneId) {
           await loadScene(targetSceneId);
         } else {
           setSceneLoading(false);
           setCompatibilityLoading(false);
-
-          setSceneError(
-            "No SAR scene metadata is available for this investigation."
-          );
+          setSceneError("No SAR scene metadata is available for this investigation.");
         }
       } catch (err) {
         if (!active) return;
-
-        const apiError = getApiError(err);
-
-        setSceneError(apiError.message);
-
-        /* Try to preserve spill data if scene loading failed */
-
-        try {
-          const spillResponse = await getSpill(id);
-
-          if (active) {
-            setSpill(spillResponse);
-          }
-        } catch (spillError) {
-          if (active) {
-            setSceneError(
-              `${apiError.message} / ${getApiError(spillError).message}`
-            );
-          }
-        } finally {
-          if (active) {
-            setSceneLoading(false);
-            setCompatibilityLoading(false);
-          }
-        }
+        setSceneError(getApiError(err).message);
+        setSceneLoading(false);
+        setCompatibilityLoading(false);
       }
     }
 
@@ -504,114 +289,35 @@ export default function Investigation() {
     };
   }, [id, loadScene]);
 
-  /* ------------------------------------------------------------------------ */
-  /* Compatibility                                                            */
-  /* ------------------------------------------------------------------------ */
+  /* ------------------------------ detection ---------------------------- */
 
-  const isCompatible =
-    compatibility?.compatible === true;
-
-  /* ------------------------------------------------------------------------ */
-  /* Try loading GeoJSON artifact                                             */
-  /* ------------------------------------------------------------------------ */
-
-  useEffect(() => {
-    let active = true;
-
-    async function loadArtifactGeometry() {
-      if (slickGeojson) return;
-
-      const raw =
-        detection?.artifacts?.geojson;
-
-      if (!raw) return;
-
-      const url = resolveApiUrl(raw);
-
-      if (!url) return;
-
-      try {
-        const response = await fetch(url);
-
-        if (!response.ok) return;
-
-        const payload = await response.json();
-
-        const geo = normalizeGeoJSON(payload);
-
-        if (active && geo) {
-          setSlickGeojson(geo);
-        }
-      } catch {
-        /*
-         * Artifact serving is optional.
-         * The main detection response may already contain GeoJSON.
-         */
-      }
-    }
-
-    loadArtifactGeometry();
-
-    return () => {
-      active = false;
-    };
-  }, [detection?.artifacts?.geojson, slickGeojson]);
-
-  /* ------------------------------------------------------------------------ */
-  /* Detection                                                                */
-  /* ------------------------------------------------------------------------ */
-
-  /**
-   * POST /api/spills/{spill_id}/detect -- no body, no file re-upload, no
-   * scene_id/file_path needed. The backend runs synchronously against the
-   * file it already saved during upload, so this call's response is
-   * already the final result. See detectSpill()'s doc comment in
-   * services/api.js for the exact response shape.
-   */
   const runDetection = async () => {
     if (!spillId) {
-      setDetectionError(
-        "No spill_id is available for this investigation yet."
-      );
-
+      setDetectionError("No spill_id is available for this investigation yet.");
       return;
     }
 
     setDetectionLoading(true);
     setDetectionError(null);
 
-    const saved = loadInvestigationData(id) || {};
-
     try {
       const job = await detectSpill(spillId);
-
       const normalizedJob = normalizeDetectionJob(job);
 
       setDetection(normalizedJob);
+      if (normalizedJob.geojson) setSlickGeojson(normalizedJob.geojson);
+      setLayers((prev) => ({ ...prev, slick: true }));
 
-      if (normalizedJob.geojson) {
-        setSlickGeojson(normalizedJob.geojson);
-      }
-
-      setSlickIsMock(false);
-
-      saveInvestigationData(id, {
-        ...saved,
-        detection: job,
-      });
+      patchInvestigationData(id, { detection: job });
     } catch (err) {
       const apiErr = getApiError(err);
-
       setDetectionError(apiErr.message);
-
       setDetection(
         normalizeDetectionJob({
           spill_id: spillId,
           status: "detection_failed",
           message: apiErr.message,
-          error: apiErr.code
-            ? { code: apiErr.code, message: apiErr.message }
-            : null,
+          error: apiErr.code ? { code: apiErr.code, message: apiErr.message } : null,
         })
       );
     } finally {
@@ -619,66 +325,69 @@ export default function Investigation() {
     }
   };
 
-  /* ------------------------------------------------------------------------ */
-  /* Drift                                                                     */
-  /* ------------------------------------------------------------------------ */
+  /* -------------------------------- drift ------------------------------ */
 
-  const runDriftAction = async (
-    direction,
-    params
-  ) => {
-    if (!slickGeojson) {
-      setDriftError(
-        "No slick geometry is available. Run detection first."
-      );
+  const hasSlick = featureCount(slickGeojson) > 0;
 
+  const runDriftAction = async (direction, params) => {
+    const isHindcast = direction === "hindcast";
+    const setLoading = isHindcast ? setHindcastLoading : setForecastLoading;
+    const setResult = isHindcast ? setHindcastResult : setForecastResult;
+    const setError = isHindcast ? setHindcastError : setForecastError;
+    const runner = isHindcast ? runHindcast : runForecast;
+
+    if (!hasSlick) {
+      setError("No slick geometry is available. Run detection first.");
       return;
     }
 
-    const isHindcast =
-      direction === "hindcast";
-
-    const setLoading = isHindcast
-      ? setHindcastLoading
-      : setForecastLoading;
-
-    const setResult = isHindcast
-      ? setHindcastResult
-      : setForecastResult;
-
-    const runner = isHindcast
-      ? runHindcast
-      : runForecast;
-
     setLoading(true);
-    setDriftError(null);
+    setError(null);
 
     try {
       const result = await runner({
         spillId,
-
-        acquisitionTimeUtc:
-          scene?.acquisition_start_utc ||
-          undefined,
-
+        acquisitionTimeUtc: scene?.acquisition_start_utc || undefined,
         slickGeojson,
-
         parameters: params,
       });
 
       setResult(result);
-    } catch (err) {
-      setDriftError(
-        getApiError(err).message
+      patchInvestigationData(id, { [direction]: result });
+
+      // Result â†’ map: make the new layer visible and frame it intentionally.
+      setLayers((prev) => ({
+        ...prev,
+        [isHindcast ? "hindcastOrigin" : "forecastCorridor"]: true,
+      }));
+      requestFocus(
+        isHindcast
+          ? [slickGeojson, result.corridor, result.endpoint]
+          : [slickGeojson, hindcastResult?.corridor, result.corridor, result.endpoint]
       );
+    } catch (err) {
+      setError(getApiError(err).message);
     } finally {
       setLoading(false);
     }
   };
 
-  /* ------------------------------------------------------------------------ */
-  /* AIS                                                                       */
-  /* ------------------------------------------------------------------------ */
+  const showDriftOnMap = (direction) => {
+    if (direction === "hindcast") {
+      setLayers((prev) => ({ ...prev, hindcastOrigin: true }));
+      requestFocus([slickGeojson, hindcastResult?.corridor, hindcastResult?.endpoint]);
+    } else {
+      setLayers((prev) => ({ ...prev, forecastCorridor: true }));
+      requestFocus([
+        slickGeojson,
+        hindcastResult?.corridor,
+        forecastResult?.corridor,
+        forecastResult?.endpoint,
+      ]);
+    }
+  };
+
+  /* --------------------------------- AIS ------------------------------- */
 
   const loadAis = async () => {
     if (!spillId) return;
@@ -687,22 +396,15 @@ export default function Investigation() {
     setAisError(null);
 
     try {
-      // GET /api/v1/ais/tracks requires start_time/end_time -- centre the
-      // query on the SCENE's real acquisition time (not detection.detected_at,
-      // which is just the wall-clock moment the "Run Detection" button was
-      // clicked). AIS datasets are historical recordings tied to a real
-      // capture date; anchoring to "now" means a scene from a real dataset
-      // (e.g. Jan 2025) can never overlap a query centred on today's date.
+      // start/end are REQUIRED by GET /api/v1/ais/tracks. Anchor the query on
+      // the SCENE's acquisition time (AIS datasets are historical recordings).
       const centroid = detection?.metadata?.centroid;
-      const isTestFixture =
-        manifest?.data_mode === "TEST_FIXTURE";
+      const isTestFixture = manifest?.data_mode === "TEST_FIXTURE";
 
-      // The TEST_FIXTURE tracks and corridor are deliberately precomputed in
-      // a synthetic coordinate/time window. Do not filter them using a live
-      // model detection centroid, which belongs to the uploaded raster and
-      // can be unrelated to the labelled demonstration fixture.
+      // TEST_FIXTURE tracks are precomputed in a synthetic window; do not
+      // filter them by a live detection centroid.
       const scenarioId = isTestFixture
-        ? (manifest?.scenario_id || scene?.scene_id)
+        ? manifest?.scenario_id || scene?.scene_id
         : undefined;
 
       const response = await getAisTracks(spillId, {
@@ -718,317 +420,188 @@ export default function Investigation() {
         scenarioId,
       });
 
-      const geo =
-        normalizeAisResponse(response);
+      const geo = normalizeAisResponse(response);
 
       if (!geo) {
-        throw Object.assign(
-          new Error(
-            "AIS endpoint returned no GeoJSON tracks."
-          ),
-          {
-            code: "AIS_EMPTY",
-          }
-        );
+        throw Object.assign(new Error("AIS endpoint returned no GeoJSON tracks."), {
+          code: "AIS_EMPTY",
+        });
       }
 
       setAisTracksGeojson(geo);
-
-      /* Automatically select first track if available */
-
-      const firstTrack =
-        geo.features?.[0] || null;
-
-      if (firstTrack) {
-        setSelectedAisTrack(firstTrack);
-      }
+      setSelectedAisTrack(null);
+      setLayers((prev) => ({ ...prev, aisTracks: true }));
+      patchInvestigationData(id, { ais: geo });
+      // Intentionally no camera move: the user may already be exploring.
     } catch (err) {
-      const apiError =
-        getApiError(err);
-
-      setAisError(
-        apiError.message
-      );
-
+      setAisError(getApiError(err).message);
       setAisTracksGeojson(null);
     } finally {
       setAisLoading(false);
     }
   };
 
-  /* ------------------------------------------------------------------------ */
-  /* Candidate ranking                                                        */
-  /* ------------------------------------------------------------------------ */
+  /* ------------------------------ candidates --------------------------- */
 
-  const handleRankCandidates =
-    async () => {
-      if (!compatibility || !isCompatible) {
-        return;
+  const selectedCandidate = useMemo(
+    () =>
+      candidateRun?.candidates?.find((c) => c.candidate_id === selectedCandidateId) || null,
+    [candidateRun, selectedCandidateId]
+  );
+
+  const candidateTrackGeojson = useMemo(
+    () => resolveCandidateTrack(selectedCandidate, aisTracksGeojson),
+    [selectedCandidate, aisTracksGeojson]
+  );
+
+  const selectCandidate = useCallback(
+    (candidate) => {
+      if (!candidate) return;
+
+      setSelectedCandidateId(candidate.candidate_id);
+      setTimelineIndex(0);
+      patchInvestigationData(id, { selectedCandidateId: candidate.candidate_id });
+
+      const track = resolveCandidateTrack(candidate, aisTracksGeojson);
+      setSelectedAisTrack(track && track.properties ? track : null);
+
+      if (track) {
+        setLayers((prev) => ({ ...prev, candidateTrack: true }));
+        requestFocus([track], 14);
       }
+    },
+    [id, aisTracksGeojson, requestFocus]
+  );
 
-      setCandidateLoading(true);
-      setCandidateError(null);
-      setCandidateBlockedDetails(null);
+  const handleCandidateSelect = (candidateId) => {
+    selectCandidate(candidateRun?.candidates?.find((c) => c.candidate_id === candidateId));
+  };
 
-      try {
-        /* -------------------------------------------------------------- */
-        /* Prefer future GET candidate endpoint                           */
-        /* -------------------------------------------------------------- */
+  // Map - sidebar: clicking an AIS track selects its ranked candidate, if any.
+  const handleAisTrackSelect = (feature) => {
+    setSelectedAisTrack(feature);
+    const key = trackKey(feature);
+    const match = candidateRun?.candidates?.find((c) => key != null && String(c.mmsi) === key);
+    if (match && match.candidate_id !== selectedCandidateId) {
+      setSelectedCandidateId(match.candidate_id);
+      setTimelineIndex(0);
+      patchInvestigationData(id, { selectedCandidateId: match.candidate_id });
+      setLayers((prev) => ({ ...prev, candidateTrack: true }));
+    }
+  };
 
-        try {
-          const generated =
-            normalizeCandidateResponse(
-              await getCandidates(spillId)
-            );
+  const compatibilityFailed = compatibility?.compatible === false;
 
-          if (generated) {
-            setCandidateRun(generated);
+  const handleRankCandidates = async () => {
+    if (compatibilityFailed) {
+      setCandidateError(compatibility?.reasons?.[0] || "The backend compatibility check did not pass.");
+      return;
+    }
 
-            if (
-              generated.candidates?.length
-            ) {
-              setSelectedCandidateId(
-                generated.candidates[0]
-                  .candidate_id
-              );
-            }
+    setCandidateLoading(true);
+    setCandidateError(null);
+    setCandidateBlockedDetails(null);
 
-            return;
-          }
-        } catch {
-          /*
-           * Current backend may not expose
-           * GET /api/spills/{id}/candidates.
-           *
-           * Fall through to rankCandidates().
-           */
-        }
+    try {
+      let result = null;
 
-        /* -------------------------------------------------------------- */
-        /* Existing rank endpoint                                         */
-        /* -------------------------------------------------------------- */
-
-        const tracks =
-          aisTracksGeojson?.features || [];
-
-        const candidateInputs =
-          tracks
-            .map(
-              (track) =>
-                track?.properties
-                  ?.candidate_input
-            )
-            .filter(Boolean);
+      if (!result) {
+        const candidateInputs = (aisTracksGeojson?.features || [])
+          .map((track) => track?.properties?.candidate_input)
+          .filter(Boolean);
 
         if (!candidateInputs.length) {
-          throw Object.assign(
-            new Error(
-              "No rankable AIS candidate records are available."
-            ),
-            {
-              code:
-                "NO_AIS_CANDIDATES",
-            }
-          );
+          throw Object.assign(new Error("No rankable AIS candidate records are available."), {
+            code: "NO_AIS_CANDIDATES",
+          });
         }
 
-        const drift =
-          hindcastResult ||
-          forecastResult;
-
+        const drift = hindcastResult || forecastResult;
         if (!drift) {
-          throw new Error(
-            "Run a hindcast or forecast before ranking candidates."
-          );
+          throw new Error("Run a hindcast or forecast before ranking candidates.");
         }
 
         const driftEvidence = {
-          run_id:
-            drift.run_id || null,
-
-          run_type:
-            drift.run_type || null,
-
+          run_id: drift.run_id || null,
+          run_type: drift.run_type || null,
           mode:
             manifest?.data_mode === "TEST_FIXTURE"
               ? "TEST_FIXTURE"
-              : (drift.data_mode || "analyst_parameter_driven"),
-
-          corridor_reference:
-            drift.corridor?.type ||
-            null,
-
-          uncertainty_radius_m:
-            drift.uncertainty_radius_m ??
-            null,
-
-          assumptions:
-            drift.assumptions || [],
+              : drift.data_mode || "analyst_parameter_driven",
+          corridor_reference: drift.corridor?.type || null,
+          uncertainty_radius_m: drift.uncertainty_radius_m ?? null,
+          assumptions: drift.assumptions || [],
         };
 
-        const result =
-          await rankCandidates(
-            spillId,
-            {
-              compatibility: {
-                compatible: true,
-
-                status: "passed",
-
-                temporal_overlap:
-                  compatibility.temporal_overlap ??
-                  true,
-
-                geographic_overlap:
-                  compatibility.geographic_overlap ??
-                  true,
-
-                crs_valid:
-                  compatibility.crs_valid ??
-                  true,
-
-                environmental_coverage:
-                  compatibility.environmental_coverage ??
-                  true,
-
-                reasons:
-                  compatibility.reasons ||
-                  [],
-              },
-
-              driftEvidence,
-
-              candidates:
-                candidateInputs,
-
-              limit: 10,
-            }
-          );
-
-        setCandidateRun(result);
-
-        if (
-          result?.candidates?.length
-        ) {
-          setSelectedCandidateId(
-            result.candidates[0]
-              .candidate_id
-          );
-        }
-      } catch (err) {
-        const apiError =
-          getApiError(err);
-
-        if (
-          apiError.code ===
-          "NO_AIS_CANDIDATES"
-        ) {
-          setCandidateError(
-            "AIS data is available only when the configured AIS endpoint returns rankable candidate_input records."
-          );
-        } else {
-          setCandidateError(
-            apiError.message
-          );
-        }
-
-        setCandidateBlockedDetails(
-          apiError.details || null
-        );
-      } finally {
-        setCandidateLoading(false);
+        result = await rankCandidates(spillId, {
+          compatibility: {
+            compatible: true,
+            status: "passed",
+            temporal_overlap: compatibility?.temporal_overlap ?? true,
+            geographic_overlap: compatibility?.geographic_overlap ?? true,
+            crs_valid: compatibility?.crs_valid ?? true,
+            environmental_coverage: compatibility?.environmental_coverage ?? true,
+            reasons: compatibility?.reasons || [],
+          },
+          driftEvidence,
+          candidates: candidateInputs,
+          limit: 10,
+        });
       }
-    };
 
-  /* ------------------------------------------------------------------------ */
-  /* Selected candidate                                                       */
-  /* ------------------------------------------------------------------------ */
+      setCandidateRun(result);
+      patchInvestigationData(id, { candidateRun: result });
 
-  const selectedCandidate =
-    useMemo(() => {
-      return (
-        candidateRun?.candidates?.find(
-          (candidate) =>
-            candidate.candidate_id ===
-            selectedCandidateId
-        ) || null
+      if (result?.candidates?.length) {
+        selectCandidate(result.candidates[0]);
+      }
+    } catch (err) {
+      const apiError = getApiError(err);
+
+      setCandidateError(
+        apiError.code === "NO_AIS_CANDIDATES"
+          ? "The loaded AIS tracks contain no rankable candidate records (candidate_input)."
+          : apiError.message
       );
-    }, [
-      candidateRun,
-      selectedCandidateId,
-    ]);
+      setCandidateBlockedDetails(apiError.details || null);
+    } finally {
+      setCandidateLoading(false);
+    }
+  };
 
-  /* ------------------------------------------------------------------------ */
-  /* Candidate evidence                                                       */
-  /* ------------------------------------------------------------------------ */
-
+  // Optional: enrich the selected candidate with backend detail.
   useEffect(() => {
     let active = true;
 
     async function hydrateCandidate() {
-      if (
-        !selectedCandidate ||
-        !candidateRun?.run_id
-      ) {
-        return;
-      }
-
-      const trackReference =
-        selectedCandidate.track_reference;
-
-      const sourceReference =
-        selectedCandidate.source_reference;
-
-      if (
-        !trackReference &&
-        !sourceReference
-      ) {
-        return;
-      }
+      if (!selectedCandidate || !candidateRun?.run_id) return;
+      if (!selectedCandidate.track_reference && !selectedCandidate.source_reference) return;
 
       setCandidateDetailLoading(true);
 
       try {
-        const detail =
-          await getCandidateDetail(
-            spillId,
-            candidateRun.run_id,
-            selectedCandidate.candidate_id
-          );
+        const detail = await getCandidateDetail(
+          spillId,
+          candidateRun.run_id,
+          selectedCandidate.candidate_id
+        );
 
-        if (!active || !detail) {
-          return;
-        }
+        if (!active || !detail) return;
 
-        setCandidateRun(
-          (previous) => {
-            if (!previous) {
-              return previous;
-            }
-
-            return {
-              ...previous,
-
-              candidates:
-                previous.candidates.map(
-                  (candidate) =>
-                    candidate.candidate_id ===
-                    detail.candidate_id
-                      ? detail
-                      : candidate
+        setCandidateRun((previous) =>
+          previous
+            ? {
+                ...previous,
+                candidates: previous.candidates.map((c) =>
+                  c.candidate_id === detail.candidate_id ? detail : c
                 ),
-            };
-          }
+              }
+            : previous
         );
       } catch {
-        /*
-         * Candidate detail is optional.
-         * Existing candidate result remains usable.
-         */
+        // Candidate detail is optional; the ranked result remains usable.
       } finally {
-        if (active) {
-          setCandidateDetailLoading(false);
-        }
+        if (active) setCandidateDetailLoading(false);
       }
     }
 
@@ -1037,107 +610,26 @@ export default function Investigation() {
     return () => {
       active = false;
     };
-  }, [
-    selectedCandidate,
-    candidateRun?.run_id,
-    spillId,
-  ]);
+    // Only re-hydrate when the selection or run changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCandidateId, candidateRun?.run_id, spillId]);
 
-  /* ------------------------------------------------------------------------ */
-  /* Candidate track                                                          */
-  /* ------------------------------------------------------------------------ */
+  // Selecting a candidate brings its evidence into view.
+  useEffect(() => {
+    if (!selectedCandidateId) return undefined;
+    const t = setTimeout(() => {
+      panelRef.current
+        ?.querySelector("#section-evidence")
+        ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }, 80);
+    return () => clearTimeout(t);
+  }, [selectedCandidateId]);
 
-  const candidateTrackGeojson =
-    useMemo(() => {
-      if (!selectedCandidate) {
-        return null;
-      }
-
-      /* Track directly embedded in candidate */
-
-      if (
-        selectedCandidate.track_reference &&
-        typeof selectedCandidate.track_reference ===
-          "object"
-      ) {
-        return normalizeGeoJSON(
-          selectedCandidate.track_reference
-        );
-      }
-
-      /* Track found inside AIS FeatureCollection */
-
-      const fromAis =
-        findTrackForCandidate(
-          aisTracksGeojson,
-          selectedCandidate
-        );
-
-      if (fromAis) {
-        return fromAis;
-      }
-
-      /*
-       * A string track_reference may point
-       * to an API artifact. It cannot be synchronously
-       * fetched inside useMemo.
-       */
-
-      return null;
-    }, [
-      selectedCandidate,
-      aisTracksGeojson,
-    ]);
-
-  /* ------------------------------------------------------------------------ */
-  /* Timeline                                                                 */
-  /* ------------------------------------------------------------------------ */
-
-  const selectedTimeline =
-    useMemo(() => {
-      return extractTrackTimestamps(
-        candidateTrackGeojson
-      );
-    }, [candidateTrackGeojson]);
-
-  /* ------------------------------------------------------------------------ */
-  /* Candidate selection                                                      */
-  /* ------------------------------------------------------------------------ */
-
-  const handleCandidateSelect =
-    (candidateId) => {
-      setSelectedCandidateId(
-        candidateId
-      );
-
-      setTimelineIndex(0);
-
-      const candidate =
-        candidateRun?.candidates?.find(
-          (item) =>
-            item.candidate_id ===
-            candidateId
-        );
-
-      const track =
-        findTrackForCandidate(
-          aisTracksGeojson,
-          candidate
-        );
-
-      setSelectedAisTrack(track);
-    };
-
-  /* ------------------------------------------------------------------------ */
-  /* Report export                                                            */
-  /* ------------------------------------------------------------------------ */
+  /* -------------------------------- report ----------------------------- */
 
   const exportReport = async () => {
     if (!spillId) {
-      setReportError(
-        "No spill ID is available for report export."
-      );
-
+      setReportError("No spill ID is available for report export.");
       return;
     }
 
@@ -1145,816 +637,323 @@ export default function Investigation() {
     setReportError(null);
 
     try {
-      const geoProps =
-        geometryProperties(detection);
+      const payload = buildReportPayload({
+        spillId,
+        detection,
+        slickGeojson,
+        slickIsMock,
+        candidateRun,
+        compatibility,
+        scene,
+        hindcastResult,
+        forecastResult,
+        aisTracksGeojson,
+        detectionError,
+      });
 
-      let status = "failed";
+      let report = null;
+      let html = null;
 
-      if (
-        candidateRun?.candidates?.length
-      ) {
-        status = "complete";
-      } else if (
-        detection?.status ===
-          "COMPLETED" ||
-        slickGeojson
-      ) {
-        status = "partial";
-      } else if (
-        compatibility &&
-        compatibility.compatible === false
-      ) {
-        status = "blocked";
+      // Prefer the backend report generator so the exported document remains
+      // the backend's source of truth. If the HTML renderer is unavailable,
+      // fall back to a complete client-generated report rather than leaving
+      // the button apparently dead.
+      try {
+        report = await createInvestigationReport(payload);
+      } catch (reportErr) {
+        console.warn("Investigation report record could not be created:", reportErr);
       }
 
-      const dataMode =
-        slickIsMock
-          ? "synthetic_test_fixture"
-          : detection?.status ===
-              "COMPLETED"
-            ? "real"
-            : "unavailable";
+      try {
+        html = await createInvestigationReportHtml(payload);
+      } catch (htmlErr) {
+        console.warn("Backend HTML report unavailable; using local report renderer:", htmlErr);
+      }
 
-      const payload = {
-        title:
-          `SpillTrace Investigation — ${spillId}`,
+      if (!html || typeof html !== "string") {
+        html = buildLocalInvestigationReportHtml(payload);
+      }
 
-        status,
-
-        data_mode: dataMode,
-
-        spill_id: spillId,
-
-        scene_id:
-          scene?.scene_id || null,
-
-        detector:
-          detection?.metadata || {},
-
-        geometry: slickGeojson
-          ? {
-              geometry_type:
-                slickGeojson.geometry
-                  ?.type ||
-                slickGeojson.type ||
-                null,
-
-              centroid:
-                geoProps.centroid,
-
-              area_km2:
-                geoProps.area_sq_km,
-
-              perimeter_m:
-                geoProps.perimeter_m,
-
-              polygon_count: 1,
-
-              geojson:
-                slickGeojson,
-            }
-          : null,
-
-        drift: {
-          mode:
-            hindcastResult?.data_mode ||
-            forecastResult?.data_mode ||
-            null,
-
-          run_id:
-            hindcastResult?.run_id ||
-            forecastResult?.run_id ||
-            null,
-
-          origin_time_window:
-            hindcastResult
-              ? `${hindcastResult.start_time_utc} → ${hindcastResult.end_time_utc}`
-              : null,
-
-          forecast_horizon:
-            forecastResult
-              ? `${forecastResult.start_time_utc} → ${forecastResult.end_time_utc}`
-              : null,
-
-          timestep_minutes:
-            hindcastResult?.timestep_minutes ||
-            forecastResult?.timestep_minutes ||
-            null,
-
-          particle_count:
-            hindcastResult?.particle_count ||
-            forecastResult?.particle_count ||
-            null,
-
-          uncertainty_radius_m:
-            hindcastResult?.uncertainty_radius_m ??
-            forecastResult?.uncertainty_radius_m ??
-            null,
-
-          assumptions: [
-            ...(hindcastResult?.assumptions ||
-              []),
-            ...(forecastResult?.assumptions ||
-              []),
-          ],
-
-          hindcast_geojson:
-            hindcastResult?.corridor ||
-            null,
-
-          forecast_geojson:
-            forecastResult?.corridor ||
-            null,
-        },
-
-        compatibility: {
-          compatible:
-            compatibility?.compatible ===
-            true,
-
-          status_code:
-            compatibility?.status ||
-            "unknown",
-
-          reasons:
-            compatibility?.reasons || [],
-
-          sar_time_window:
-            scene?.acquisition_start_utc &&
-            scene?.acquisition_end_utc
-              ? `${scene.acquisition_start_utc} → ${scene.acquisition_end_utc}`
-              : null,
-
-          geographic_overlap:
-            compatibility?.geographic_overlap ??
-            null,
-
-          crs_valid:
-            compatibility?.crs_valid ??
-            null,
-
-          environmental_coverage:
-            compatibility?.environmental_coverage ??
-            null,
-        },
-
-        sources: [
-          scene
-            ? {
-                source_id:
-                  scene.scene_id,
-
-                source_type: "SAR",
-
-                label:
-                  scene.source ||
-                  "SAR scene",
-
-                provenance:
-                  "Backend scene metadata",
-              }
-            : null,
-
-          aisTracksGeojson
-            ? {
-                source_id:
-                  "ais-configured",
-
-                source_type: "AIS",
-
-                label:
-                  "AIS track source",
-
-                provenance:
-                  "Configured frontend AIS endpoint",
-              }
-            : null,
-        ].filter(Boolean),
-
-        candidates:
-          (
-            candidateRun?.candidates ||
-            []
-          ).map((candidate) => ({
-            candidate_id:
-              candidate.candidate_id,
-
-            vessel_name:
-              candidate.vessel_name,
-
-            mmsi:
-              candidate.mmsi,
-
-            rank:
-              candidate.rank,
-
-            score:
-              candidate.score,
-
-            score_contributions:
-              candidate.score_contributions ||
-              {},
-
-            evidence:
-              candidate.evidence_statements ||
-              [],
-
-            ais_quality:
-              candidate.ais_quality ||
-              {},
-
-            source_ids:
-              candidate.source_reference
-                ? [
-                    candidate.source_reference,
-                  ]
-                : [],
-          })),
-
-        limitations: [
-          !aisTracksGeojson
-            ? "AIS tracks are not available from the configured frontend endpoint."
-            : null,
-
-          !candidateRun?.candidates?.length
-            ? "No candidate ranking result is available."
-            : null,
-
-          slickIsMock
-            ? "Slick geometry came from the backend demonstration endpoint, not the real ML detector."
-            : null,
-        ].filter(Boolean),
-
-        warnings:
-          detectionError
-            ? [detectionError]
-            : [],
-      };
-
-      const report =
-        await createInvestigationReport(
-          payload
-        );
-
-      const html =
-        await createInvestigationReportHtml(
-          payload
-        );
-
-      const blob = new Blob(
-        [html],
-        {
-          type:
-            "text/html;charset=utf-8",
-        }
-      );
-
-      const url =
-        URL.createObjectURL(blob);
-
-      const link =
-        document.createElement("a");
-
+      const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
       link.href = url;
-
-      link.download =
-        `${report?.report_id || "spilltrace-investigation"}.html`;
-
+      link.download = `${report?.report_id || `spilltrace-investigation-${spillId}`}.html`;
       document.body.appendChild(link);
-
       link.click();
-
       link.remove();
-
-      URL.revokeObjectURL(url);
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (err) {
-      setReportError(
-        getApiError(err).message
-      );
+      setReportError(getApiError(err).message);
     } finally {
       setReportLoading(false);
     }
   };
 
-  /* ------------------------------------------------------------------------ */
-  /* Derived UI data                                                          */
-  /* ------------------------------------------------------------------------ */
+  /* ------------------------------ stage system ------------------------- */
 
-  const resolvedTitle =
+  const { stages, prerequisites, next, slickCount, detectionComplete } = computeStages({
+    spillId,
+    detection,
+    detectionLoading,
+    detectionError,
+    slickGeojson,
+    hindcast: { loading: hindcastLoading, result: hindcastResult, error: hindcastError },
+    forecast: { loading: forecastLoading, result: forecastResult, error: forecastError },
+    ais: { loading: aisLoading, loaded: !!aisTracksGeojson, error: aisError },
+    ranking: { loading: candidateLoading, run: candidateRun, error: candidateError },
+    compatibility,
+    compatibilityLoading,
+    selectedCandidate,
+  });
+
+  const goToStage = (stageKey) => {
+    const target = SECTION_FOR_STAGE[stageKey];
+    panelRef.current
+      ?.querySelector(`#section-${target}`)
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  /* --------------------------- derived map data ------------------------ */
+
+  const bounds = scene?.bounds || manifest?.bounds || null;
+  const hindcastCorridor = hindcastResult?.corridor || null;
+  const forecastCorridor = forecastResult?.corridor || null;
+
+  const positions = useMemo(
+    () => getTrackPositions(candidateTrackGeojson),
+    [candidateTrackGeojson]
+  );
+  const activePosition = positions[Math.min(timelineIndex, positions.length - 1)];
+  const timelinePoint =
+    activePosition && activePosition.lat != null && activePosition.lon != null
+      ? [activePosition.lat, activePosition.lon]
+      : null;
+
+  const availability = {
+    sarSource: !!bounds,
+    slick: hasSlick,
+    hindcastOrigin: !!hindcastCorridor,
+    forecastCorridor: !!forecastCorridor,
+    aisTracks: !!aisTracksGeojson,
+    candidateTrack: !!candidateTrackGeojson,
+  };
+
+  const isVisible = (key) => availability[key] && layers[key];
+
+  const legendVisible = {
+    slick: isVisible("slick"),
+    sarSource: isVisible("sarSource"),
+    hindcastOrigin: isVisible("hindcastOrigin"),
+    forecastCorridor: isVisible("forecastCorridor"),
+    uncertainty:
+      (isVisible("hindcastOrigin") && hindcastResult?.uncertainty_radius_m > 0) ||
+      (isVisible("forecastCorridor") && forecastResult?.uncertainty_radius_m > 0),
+    aisTracks: isVisible("aisTracks"),
+    candidateTrack: isVisible("candidateTrack"),
+  };
+
+  const fitView = () =>
+    requestFocus([
+      isVisible("slick") && slickGeojson,
+      isVisible("hindcastOrigin") && hindcastCorridor,
+      isVisible("forecastCorridor") && forecastCorridor,
+      isVisible("aisTracks") && aisTracksGeojson,
+      isVisible("candidateTrack") && candidateTrackGeojson,
+    ]);
+
+  const geo = geometryProperties(detection);
+  const title =
+    spill?.filename ||
+    persisted?.fileName ||
+    persisted?.upload?.filename ||
     scene?.scene_id ||
-    spill?.spill_id ||
     id;
 
-  const bounds =
-    scene?.bounds ||
-    manifest?.bounds ||
-    null;
+  const detectionLabel =
+    stages.detection.state === "complete"
+      ? hasSlick
+        ? "Complete"
+        : "No slick detected"
+      : stages.detection.state === "running"
+        ? "Running"
+        : stages.detection.state === "failed"
+          ? "Failed"
+          : "Not run";
 
-  const candidateCount =
-    candidateRun?.candidates?.length || 0;
+  const notices = (
+    <>
+      {sceneError && (
+        <div className="banner banner-warn">
+          <strong>Scene metadata</strong> {sceneError}
+        </div>
+      )}
+      {spillError && (
+        <div className="banner banner-warn">
+          <strong>Spill record</strong> {spillError}
+        </div>
+      )}
+      {reportError && (
+        <div className="banner banner-error">
+          <strong>Report export failed</strong> {reportError}
+        </div>
+      )}
+    </>
+  );
 
-  /* ------------------------------------------------------------------------ */
-  /* Render                                                                   */
-  /* ------------------------------------------------------------------------ */
+  const driftBlockedReason =
+    stages.hindcast.state === "blocked" ? stages.hindcast.reason : null;
+
+  /* -------------------------------- render ----------------------------- */
 
   return (
     <div className="investigation-page">
-      {/* ================================================================== */}
-      {/* HEADER                                                             */}
-      {/* ================================================================== */}
+      <InvestigationHeader
+        title={title}
+        spillId={spillId}
+        sceneId={scene?.scene_id}
+        stages={stages}
+        hasSlick={hasSlick}
+        detectionComplete={detectionComplete}
+        next={next}
+        onGo={goToStage}
+        onExport={exportReport}
+        exporting={reportLoading}
+        notices={notices}
+      />
 
-      <div className="investigation-header">
-        <div className="investigation-title-row">
-          <div>
-            <p className="eyebrow">
-              SPILLTRACE / INVESTIGATION WORKSPACE
-            </p>
+      <InvestigationSummary
+        area={geo.area_sq_km}
+        detectionLabel={detectionLabel}
+        source={scene?.source}
+        acquisition={scene?.acquisition_start_utc}
+        dataMode={manifest?.data_mode}
+      />
 
-            <h1>{resolvedTitle}</h1>
+      <div className="inv-workspace">
+        <div className="inv-map">
+          <div className="map-context">
+            <div><span className="map-context-kicker">INVESTIGATION MAP</span><strong>Live geospatial evidence</strong></div>
+            <span className="map-context-status"><i /> {hasSlick ? "Slick layer active" : "Awaiting detection"}</span>
           </div>
-
-          <span
-            className={`investigation-status status-${
-              compatibility?.status ||
-              "loading"
-            }`}
-          >
-            {compatibilityLoading
-              ? "Checking…"
-              : compatibility?.compatible
-                ? "Compatible"
-                : "Blocked"}
-          </span>
-        </div>
-
-        <div className="investigation-actions">
-          <button
-            className="secondary-button"
-            onClick={() =>
-              navigate("/upload")
-            }
-          >
-            ← New Investigation
-          </button>
-
-          <button
-            className="primary-button"
-            onClick={exportReport}
-            disabled={reportLoading}
-          >
-            {reportLoading
-              ? "Exporting…"
-              : "Export Investigation Report"}
-          </button>
-        </div>
-
-        {sceneError && (
-          <div className="error-state">
-            <strong>
-              Scene metadata
-            </strong>
-
-            <p>{sceneError}</p>
-          </div>
-        )}
-
-        {reportError && (
-          <div className="error-state">
-            <strong>
-              Report export failed
-            </strong>
-
-            <p>{reportError}</p>
-          </div>
-        )}
-      </div>
-
-      {/* ================================================================== */}
-      {/* WORKSPACE                                                          */}
-      {/* ================================================================== */}
-
-      <div className="investigation-workspace">
-        {/* ================================================================ */}
-        {/* MAP                                                               */}
-        {/* ================================================================ */}
-
-        <div className="map-container">
           <InvestigationMap
             sceneBounds={bounds}
-            slickGeojson={
-              slickGeojson
-            }
-            hindcastCorridor={
-              hindcastResult?.corridor ||
-              null
-            }
-            hindcastEndpoint={
-              hindcastResult?.endpoint ||
-              null
-            }
-            forecastCorridor={
-              forecastResult?.corridor ||
-              null
-            }
-            forecastEndpoint={
-              forecastResult?.endpoint ||
-              null
-            }
-            aisTracksGeojson={
-              aisTracksGeojson
-            }
-            candidateTrackGeojson={
-              candidateTrackGeojson
-            }
+            slickGeojson={slickGeojson}
+            hindcastCorridor={hindcastCorridor}
+            hindcastEndpoint={hindcastResult?.endpoint || null}
+            hindcastUncertaintyM={hindcastResult?.uncertainty_radius_m}
+            forecastCorridor={forecastCorridor}
+            forecastEndpoint={forecastResult?.endpoint || null}
+            forecastUncertaintyM={forecastResult?.uncertainty_radius_m}
+            aisTracksGeojson={aisTracksGeojson}
+            candidateTrackGeojson={candidateTrackGeojson}
+            candidateMmsi={selectedCandidate?.mmsi}
+            selectedAisKey={trackKey(selectedAisTrack)}
+            timelinePoint={timelinePoint}
             layers={layers}
+            basemap={basemap}
+            focus={mapFocus}
+            onAisTrackSelect={handleAisTrackSelect}
           />
 
-          <MapLegend />
+          <MapLegend visible={legendVisible} />
 
-          <div className="map-overlay-stack">
-            <MapLayers
-              layers={layers}
-              onToggle={toggleLayer}
-              availability={{
-                sarSource: !!bounds,
-
-                slick:
-                  !!slickGeojson,
-
-                hindcastOrigin:
-                  !!hindcastResult
-                    ?.corridor,
-
-                forecastCorridor:
-                  !!forecastResult
-                    ?.corridor,
-
-                aisTracks:
-                  !!aisTracksGeojson,
-
-                candidateTrack:
-                  !!candidateTrackGeojson,
-              }}
-            />
-
-            <button
-              className="secondary-button map-action-button"
-              onClick={loadAis}
-              disabled={aisLoading}
-            >
-              {aisLoading
-                ? "Loading AIS…"
-                : "Load AIS Tracks"}
-            </button>
-          </div>
+          <MapLayers
+            layers={layers}
+            availability={availability}
+            onToggle={toggleLayer}
+            basemap={basemap}
+            onBasemap={setBasemap}
+            onFit={fitView}
+          />
         </div>
 
-        {/* ================================================================ */}
-        {/* SIDEBAR                                                           */}
-        {/* ================================================================ */}
+        <aside className="inv-panel" ref={panelRef} aria-label="Analysis panel">
+          <CompatibilityStatus
+            compatibility={compatibility}
+            loading={compatibilityLoading}
+          />
 
-        <aside className="investigation-sidebar">
-          {/* -------------------------------------------------------------- */}
-          {/* SCENE SELECTOR                                                 */}
-          {/* -------------------------------------------------------------- */}
+          <DetectionCard
+            stage={stages.detection}
+            detection={detection}
+            slickCount={slickCount}
+            canRun={!!spillId && !spillError}
+            error={detectionError}
+            onRun={runDetection}
+            onShowOnMap={() => requestFocus([slickGeojson], 13)}
+          />
 
-          <section className="investigation-sidebar-section">
-            <SceneSelector
-              scenes={scenes}
-              selectedSceneId={
-                scene?.scene_id
-              }
-              onSelect={loadScene}
-              loading={
-                sceneLoading &&
-                scenes.length === 0
-              }
-              error={null}
-            />
-          </section>
+          <DriftPanel
+            hindcastStage={stages.hindcast}
+            forecastStage={stages.forecast}
+            hindcastResult={hindcastResult}
+            forecastResult={forecastResult}
+            hindcastLoading={hindcastLoading}
+            forecastLoading={forecastLoading}
+            hindcastError={hindcastError}
+            forecastError={forecastError}
+            blockedReason={driftBlockedReason}
+            layers={layers}
+            onRun={runDriftAction}
+            onShow={showDriftOnMap}
+            onToggleLayer={toggleLayer}
+          />
 
-          {/* -------------------------------------------------------------- */}
-          {/* SCENE METADATA                                                 */}
-          {/* -------------------------------------------------------------- */}
+          <AisPanel
+            stage={stages.ais}
+            tracks={aisTracksGeojson}
+            loading={aisLoading}
+            error={aisError}
+            compatibility={compatibility}
+            selectedTrack={selectedAisTrack}
+            onLoad={loadAis}
+            onShowOnMap={() => {
+              setLayers((prev) => ({ ...prev, aisTracks: true }));
+              requestFocus([aisTracksGeojson]);
+            }}
+            rankingReady={stages.ranking.state === "ready"}
+            onGoToRanking={() => goToStage("ranking")}
+          />
 
-          <section className="investigation-sidebar-section">
-            {sceneLoading ? (
-              <div className="loading-state">
-                Loading scene metadata…
-              </div>
-            ) : (
-              <SceneMetadata
-                scene={scene}
-                manifest={manifest}
-              />
-            )}
-          </section>
-
-          {/* -------------------------------------------------------------- */}
-          {/* COMPATIBILITY                                                  */}
-          {/* -------------------------------------------------------------- */}
-
-          <section className="investigation-sidebar-section">
-            <CompatibilityStatus
-              compatibility={
-                compatibilityLoading
-                  ? { status: "loading" }
-                  : compatibility
-              }
-              onRankCandidates={
-                handleRankCandidates
-              }
-              rankDisabled={
-                candidateLoading ||
-                !(
-                  hindcastResult ||
-                  forecastResult
-                )
-              }
-            />
-          </section>
-
-          {/* -------------------------------------------------------------- */}
-          {/* AIS QUALITY                                                    */}
-          {/* -------------------------------------------------------------- */}
-
-          <section className="investigation-sidebar-section">
-            <AISQualityPanel
-              compatibility={
-                compatibility
-              }
-            />
-
-            {aisError && (
-              <div className="empty-state">
-                {aisError}
-              </div>
-            )}
-          </section>
-
-          {/* -------------------------------------------------------------- */}
-          {/* DETECTION                                                       */}
-          {/* -------------------------------------------------------------- */}
-
-          <section className="investigation-sidebar-section">
-            <div className="section-label">
-              DETECTION
-            </div>
-
-            <DetectionStatus
-              job={detection}
-            />
-
-            <SlickMetrics
-              metadata={
-                detection?.metadata
-              }
-              mockArea={mockArea}
-              isMockSource={
-                slickIsMock
-              }
-            />
-
-            {detectionError && (
-              <div className="error-state">
-                <strong>
-                  Detection error
-                </strong>
-
-                <p>
-                  {detectionError}
-                </p>
-              </div>
-            )}
-
-            {spillId && (
-              <button
-                className="secondary-button"
-                onClick={
-                  runDetection
-                }
-                disabled={
-                  detectionLoading
-                }
-              >
-                {detectionLoading
-                  ? "Running detector…"
-                  : detection
-                    ? "Re-run Detection"
-                    : "Run Detection"}
-              </button>
-            )}
-
-            {detection?.artifacts &&
-              Object.keys(
-                detection.artifacts
-              ).length > 0 && (
-                <div className="artifact-list">
-                  {Object.entries(
-                    detection.artifacts
-                  ).map(
-                    ([key, value]) => {
-                      const url =
-                        resolveApiUrl(
-                          value
-                        );
-
-                      if (!url) {
-                        return null;
-                      }
-
-                      return (
-                        <a
-                          key={key}
-                          href={url}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          {key.replaceAll(
-                            "_",
-                            " "
-                          )}
-                        </a>
-                      );
-                    }
-                  )}
-                </div>
-              )}
-          </section>
-
-          {/* -------------------------------------------------------------- */}
-          {/* DRIFT                                                           */}
-          {/* -------------------------------------------------------------- */}
-
-          <section className="investigation-sidebar-section">
-            <DriftControls
-              onRunHindcast={(params) =>
-                runDriftAction(
-                  "hindcast",
-                  params
-                )
-              }
-              onRunForecast={(params) =>
-                runDriftAction(
-                  "forecast",
-                  params
-                )
-              }
-              hindcastLoading={
-                hindcastLoading
-              }
-              forecastLoading={
-                forecastLoading
-              }
-              disabledReason={
-                !slickGeojson
-                  ? "Run detection to obtain slick geometry before running drift."
-                  : null
-              }
-            />
-
-            {driftError && (
-              <div className="error-state">
-                <strong>
-                  Drift request failed
-                </strong>
-
-                <p>
-                  {driftError}
-                </p>
-              </div>
-            )}
-          </section>
-
-          {/* -------------------------------------------------------------- */}
-          {/* AIS TRACK INFO                                                  */}
-          {/* -------------------------------------------------------------- */}
-
-          <section className="investigation-sidebar-section">
-            <div className="section-label">
-              AIS
-            </div>
-
-            <AISTrackInfo
-              track={selectedAisTrack}
-              compatibilityBlocked={
-                !isCompatible
-              }
-              blockedReason={
-                compatibility
-                  ?.reasons?.[0]
-              }
-            />
-          </section>
-
-          {/* -------------------------------------------------------------- */}
-          {/* CANDIDATES                                                      */}
-          {/* -------------------------------------------------------------- */}
-
-          <section className="candidate-section investigation-sidebar-section">
-            <div className="candidate-section-header">
-              <h2>
-                Candidates
-              </h2>
-
-              {candidateRun && (
-                <span className="candidate-count">
-                  {candidateCount}
-                </span>
-              )}
-            </div>
-
-            {candidateLoading && (
-              <div className="loading-state">
-                Generating / ranking
-                candidates…
-              </div>
-            )}
-
-            {!candidateLoading &&
-              candidateError && (
-                <CandidateBlocked
-                  reason={
-                    candidateError
-                  }
-                  details={
-                    candidateBlockedDetails
-                  }
-                />
-              )}
-
-            {!candidateLoading &&
-              !candidateError &&
-              candidateRun && (
-                <CandidateList
-                  candidates={
-                    candidateRun.candidates ||
-                    []
-                  }
-                  selectedCandidateId={
-                    selectedCandidateId
-                  }
-                  onSelect={
-                    handleCandidateSelect
-                  }
-                />
-              )}
-
-            {!candidateLoading &&
-              !candidateError &&
-              !candidateRun && (
-                <div className="empty-state">
-                  Load AIS, run drift,
-                  then rank candidates.
-                  The frontend does not
-                  invent vessels when AIS
-                  data is absent.
-                </div>
-              )}
-          </section>
-
-          {/* -------------------------------------------------------------- */}
-          {/* EVIDENCE + TIMELINE                                            */}
-          {/* -------------------------------------------------------------- */}
+          <CandidatePanel
+            stage={stages.ranking}
+            prerequisites={prerequisites}
+            run={candidateRun}
+            loading={candidateLoading}
+            error={candidateError}
+            errorDetails={candidateBlockedDetails}
+            aisTracks={aisTracksGeojson}
+            selectedCandidateId={selectedCandidateId}
+            onRank={handleRankCandidates}
+            onSelect={handleCandidateSelect}
+          />
 
           {selectedCandidate && (
-            <section className="investigation-sidebar-section">
-              {candidateDetailLoading && (
-                <div className="loading-state">
-                  Loading candidate
-                  evidence…
-                </div>
-              )}
+            <Section id="evidence" title="EVIDENCE" state={stages.evidence.state}>
+              <EvidenceDrawer candidate={selectedCandidate} loading={candidateDetailLoading} />
 
-              <EvidenceDrawer
-                candidate={
-                  selectedCandidate
-                }
-              />
-
-              <AISTimeline
-                timestamps={
-                  selectedTimeline
-                }
-                selectedIndex={
-                  timelineIndex
-                }
-                onChange={
-                  setTimelineIndex
-                }
-              />
-            </section>
+              <div className="subsection">
+                <span className="label">TRACK TIMELINE</span>
+                <AISTimeline
+                  positions={positions}
+                  selectedIndex={timelineIndex}
+                  onChange={setTimelineIndex}
+                />
+              </div>
+            </Section>
           )}
 
-          {/* -------------------------------------------------------------- */}
-          {/* DISCLAIMER                                                      */}
-          {/* -------------------------------------------------------------- */}
+          <SceneMetadata
+            scene={scene}
+            manifest={manifest}
+            loading={sceneLoading}
+            scenes={scenes}
+            onSelectScene={loadScene}
+          />
 
-          <div className="investigation-disclaimer">
-            <strong>
-              Investigation support only
-            </strong>
-
+          <div className="disclaimer">
+            <strong>Investigation support only</strong>
             <span>
               {candidateRun?.disclaimer ||
                 "Candidate rankings support investigation and do not constitute legal attribution."}
