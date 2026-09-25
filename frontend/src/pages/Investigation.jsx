@@ -8,7 +8,6 @@ import {
   getAisTracks,
   getApiError,
   getCandidateDetail,
-  getCandidates,
   getScenes,
   getSceneCompatibility,
   getSceneManifest,
@@ -40,7 +39,6 @@ import {
   getTrackPositions,
   loadInvestigationData,
   normalizeAisResponse,
-  normalizeCandidateResponse,
   normalizeCompatibility,
   normalizeDetectionJob,
   normalizeGeoJSON,
@@ -164,6 +162,17 @@ function InvestigationView({ id }) {
   const loadScene = useCallback(async (sceneId) => {
     if (!sceneId) return;
 
+    setAisTracksGeojson(null);
+    setSelectedAisTrack(null);
+    setCandidateRun(null);
+    setSelectedCandidateId(null);
+    patchInvestigationData(id, {
+      sceneId,
+      ais: null,
+      candidateRun: null,
+      selectedCandidateId: null,
+    });
+
     setSceneLoading(true);
     setCompatibilityLoading(true);
     setSceneError(null);
@@ -189,7 +198,7 @@ function InvestigationView({ id }) {
       setSceneLoading(false);
       setCompatibilityLoading(false);
     }
-  }, []);
+  }, [id]);
 
   /* ------------------------------- boot -------------------------------- */
 
@@ -346,7 +355,7 @@ function InvestigationView({ id }) {
       setResult(result);
       patchInvestigationData(id, { [direction]: result });
 
-      // Result → map: make the new layer visible and frame it intentionally.
+      // Result â†’ map: make the new layer visible and frame it intentionally.
       setLayers((prev) => ({
         ...prev,
         [isHindcast ? "hindcastOrigin" : "forecastCorridor"]: true,
@@ -468,7 +477,7 @@ function InvestigationView({ id }) {
     selectCandidate(candidateRun?.candidates?.find((c) => c.candidate_id === candidateId));
   };
 
-  // Map → sidebar: clicking an AIS track selects its ranked candidate, if any.
+  // Map - sidebar: clicking an AIS track selects its ranked candidate, if any.
   const handleAisTrackSelect = (feature) => {
     setSelectedAisTrack(feature);
     const key = trackKey(feature);
@@ -481,7 +490,6 @@ function InvestigationView({ id }) {
     }
   };
 
-  const isCompatible = compatibility?.compatible === true;
   const compatibilityFailed = compatibility?.compatible === false;
 
   const handleRankCandidates = async () => {
@@ -496,13 +504,6 @@ function InvestigationView({ id }) {
 
     try {
       let result = null;
-
-      // Prefer an existing backend run for this spill.
-      try {
-        result = normalizeCandidateResponse(await getCandidates(spillId));
-      } catch {
-        // No stored run: fall through to the rank endpoint.
-      }
 
       if (!result) {
         const candidateInputs = (aisTracksGeojson?.features || [])

@@ -1,0 +1,87 @@
+[1mdiff --git a/frontend/src/components/Drift/DriftControls.jsx b/frontend/src/components/Drift/DriftControls.jsx[m
+[1mindex 2f3dd33..28c051f 100644[m
+[1m--- a/frontend/src/components/Drift/DriftControls.jsx[m
+[1m+++ b/frontend/src/components/Drift/DriftControls.jsx[m
+[36m@@ -6,22 +6,6 @@[m [mimport { useState } from "react";[m
+  * defaults and are not measured data. Fully controlled by DriftPanel.[m
+  */[m
+ [m
+[31m-export const DEFAULT_PARAMS = {[m
+[31m-  wind_speed_mps: 5,[m
+[31m-  wind_direction_from_deg: 270,[m
+[31m-  current_speed_mps: 0.5,[m
+[31m-  current_direction_to_deg: 90,[m
+[31m-  timestep_minutes: 60,[m
+[31m-  duration_hours: 24,[m
+[31m-  wind_drift_coefficient: 0.03,[m
+[31m-  current_coefficient: 1.0,[m
+[31m-  particle_count: 100,[m
+[31m-  diffusion_mps: 25,[m
+[31m-  random_seed: 42,[m
+[31m-  mode: "analyst_parameter_driven",[m
+[31m-  vector_source: "analyst_input",[m
+[31m-};[m
+[31m-[m
+ const FIELDS = [[m
+   ["wind_speed_mps", "Wind speed (m/s)", { min: 0, step: 0.1 }],[m
+   ["wind_direction_from_deg", "Wind from (°)", { min: 0, max: 359 }],[m
+[1mdiff --git a/frontend/src/pages/Investigation.jsx b/frontend/src/pages/Investigation.jsx[m
+[1mindex a5137aa..5804153 100644[m
+[1m--- a/frontend/src/pages/Investigation.jsx[m
+[1m+++ b/frontend/src/pages/Investigation.jsx[m
+[36m@@ -8,7 +8,6 @@[m [mimport {[m
+   getAisTracks,[m
+   getApiError,[m
+   getCandidateDetail,[m
+[31m-  getCandidates,[m
+   getScenes,[m
+   getSceneCompatibility,[m
+   getSceneManifest,[m
+[36m@@ -40,7 +39,6 @@[m [mimport {[m
+   getTrackPositions,[m
+   loadInvestigationData,[m
+   normalizeAisResponse,[m
+[31m-  normalizeCandidateResponse,[m
+   normalizeCompatibility,[m
+   normalizeDetectionJob,[m
+   normalizeGeoJSON,[m
+[36m@@ -346,7 +344,7 @@[m [mfunction InvestigationView({ id }) {[m
+       setResult(result);[m
+       patchInvestigationData(id, { [direction]: result });[m
+ [m
+[31m-      // Result → map: make the new layer visible and frame it intentionally.[m
+[32m+[m[32m      // Result â†’ map: make the new layer visible and frame it intentionally.[m
+       setLayers((prev) => ({[m
+         ...prev,[m
+         [isHindcast ? "hindcastOrigin" : "forecastCorridor"]: true,[m
+[36m@@ -468,7 +466,7 @@[m [mfunction InvestigationView({ id }) {[m
+     selectCandidate(candidateRun?.candidates?.find((c) => c.candidate_id === candidateId));[m
+   };[m
+ [m
+[31m-  // Map → sidebar: clicking an AIS track selects its ranked candidate, if any.[m
+[32m+[m[32m  // Map â†’ sidebar: clicking an AIS track selects its ranked candidate, if any.[m
+   const handleAisTrackSelect = (feature) => {[m
+     setSelectedAisTrack(feature);[m
+     const key = trackKey(feature);[m
+[36m@@ -481,7 +479,6 @@[m [mfunction InvestigationView({ id }) {[m
+     }[m
+   };[m
+ [m
+[31m-  const isCompatible = compatibility?.compatible === true;[m
+   const compatibilityFailed = compatibility?.compatible === false;[m
+ [m
+   const handleRankCandidates = async () => {[m
+[36m@@ -497,12 +494,7 @@[m [mfunction InvestigationView({ id }) {[m
+     try {[m
+       let result = null;[m
+ [m
+[31m-      // Prefer an existing backend run for this spill.[m
+[31m-      try {[m
+[31m-        result = normalizeCandidateResponse(await getCandidates(spillId));[m
+[31m-      } catch {[m
+[31m-        // No stored run: fall through to the rank endpoint.[m
+[31m-      }[m
+[32m+[m[32m      result = null;[m
+ [m
+       if (!result) {[m
+         const candidateInputs = (aisTracksGeojson?.features || [])[m

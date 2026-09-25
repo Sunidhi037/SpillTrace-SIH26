@@ -6,22 +6,6 @@ import { useState } from "react";
  * defaults and are not measured data. Fully controlled by DriftPanel.
  */
 
-export const DEFAULT_PARAMS = {
-  wind_speed_mps: 5,
-  wind_direction_from_deg: 270,
-  current_speed_mps: 0.5,
-  current_direction_to_deg: 90,
-  timestep_minutes: 60,
-  duration_hours: 24,
-  wind_drift_coefficient: 0.03,
-  current_coefficient: 1.0,
-  particle_count: 100,
-  diffusion_mps: 25,
-  random_seed: 42,
-  mode: "analyst_parameter_driven",
-  vector_source: "analyst_input",
-};
-
 const FIELDS = [
   ["wind_speed_mps", "Wind speed (m/s)", { min: 0, step: 0.1 }],
   ["wind_direction_from_deg", "Wind from (°)", { min: 0, max: 359 }],

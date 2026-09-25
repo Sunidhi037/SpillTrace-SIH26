@@ -247,7 +247,7 @@ export const detectSpill = async (spillId) => {
       // Detection runs synchronously on the backend and can take much
       // longer than a normal API call, so it gets its own longer timeout
       // instead of the 30s default used for everything else.
-      { timeout: 180000 }
+      { timeout: 600000 }
     )
   ).data;
 };

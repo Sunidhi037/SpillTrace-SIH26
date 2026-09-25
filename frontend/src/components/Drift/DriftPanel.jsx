@@ -1,7 +1,8 @@
 import { useState } from "react";
 import Section from "../ui/Section";
 import { ErrorNotice, LoadingNotice } from "../ui/Feedback";
-import DriftControls, { DEFAULT_PARAMS } from "./DriftControls";
+import DriftControls from "./DriftControls";
+import { DEFAULT_PARAMS } from "./driftDefaults";
 import DriftResultCard from "./DriftResultCard";
 
 export default function DriftPanel({
